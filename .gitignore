@@ -1,0 +1,75 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+vector_db/
+data/chroma_db/
+
+# virtuoso runtime
+*.db
+*.lck
+*.trx
+*.pxa
+virtuoso-data/
+
+*.log
+
+/bin/*
+/.idea/*
+
+.idea/
+.vscode/
+.DS_Store
+
+/target/
+/bin/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Flask
+instance/
+.webassets-cache
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+node_modules/
+**/node_modules/
+__pycache__/
+*.pyc
+.env
+.venv
+env/
+venv/
