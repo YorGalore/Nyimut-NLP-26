@@ -1,4 +1,3 @@
-
 .DS_Store
 
 # Python cache
@@ -7,4 +6,11 @@ __pycache__/
 
 # Python virtual environment
 .venv/
-data/raw/checkpoints
+
+# hasil scraping CNBC — ribuan file, berubah terus
+data/raw/checkpoints/
+data/raw/cnbc_*
+
+# log
+logs/*
+!logs/.gitkeep
