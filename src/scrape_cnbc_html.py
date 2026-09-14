@@ -32,8 +32,20 @@ CARA PAKAI
     python scrape_cnbc_html.py --probe       # cari pola URL yang benar
     python scrape_cnbc_html.py --stage1      # panen indeks (jalankan semalaman)
     python scrape_cnbc_html.py --stage2      # filter judul
-    python scrage_cnbc_html.py --stage3      # panen artikel
+    python scrape_cnbc_html.py --stage3      # panen artikel
     python scrape_cnbc_html.py --stage3 --limit-articles 3000   # kalau mepet waktu
+
+Untuk menjalankan SAMPEL VALIDASI tanpa mencemari hasil produksi, tahap 3
+bisa diarahkan ke input, output, dan folder checkpoint yang berbeda:
+
+    python scrape_cnbc_html.py --stage3 \
+        --index-file data/raw/cnbc_shortlist_sampel.csv \
+        --out-csv    data/raw/cnbc_sampel_hasil.csv \
+        --ckpt-dir   data/checkpoints/articles_sampel
+
+Ini penting karena penggabungan hasil di akhir tahap 3 menyapu SELURUH isi
+folder checkpoint. Tanpa folder terpisah, artikel dari percobaan sebelumnya
+akan ikut masuk dan angka validasi jadi tidak bisa dipercaya.
 
 Setiap tahap bisa dihentikan (Ctrl+C) dan dilanjutkan. Progres disimpan.
 
@@ -56,6 +68,7 @@ import re
 import sys
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -433,23 +446,50 @@ def parse_article(html, url):
     return rec
 
 
-def run_stage3(limit=None):
+def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
     """
     Fetch tiap artikel di shortlist.
 
     Checkpoint per 200 artikel, dan artikel yang sudah pernah diambil
     dilewati. Dengan begitu skrip bisa dihentikan kapan saja tanpa kehilangan
     progres -- penting karena tahap ini yang paling lama.
+
+    PARAMETER OPSIONAL
+    ------------------
+    index_file  file input pengganti cnbc_shortlist.csv
+    out_csv     file output pengganti C.CNBC_RAW_CSV
+    ckpt_dir    folder checkpoint pengganti data/checkpoints/articles
+
+    Ketiganya ada supaya percobaan sampel validasi bisa dijalankan tanpa
+    mencemari hasil produksi. Penggabungan di akhir fungsi ini menyapu SELURUH
+    isi folder checkpoint, jadi menjalankan sampel di folder yang sama akan
+    mencampurnya dengan artikel dari percobaan sebelumnya. Kalau ketiganya
+    dibiarkan None, perilakunya persis sama seperti sebelum parameter ini ada.
     """
-    df = pd.read_csv(SHORTLIST_CSV)
+    src = Path(index_file) if index_file else SHORTLIST_CSV
+    out_path = Path(out_csv) if out_csv else C.CNBC_RAW_CSV
+    ckptdir = Path(ckpt_dir) if ckpt_dir else ARTICLE_CKPT
+    ckptdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Input      : {src}")
+    print(f"Checkpoint : {ckptdir}")
+    print(f"Output     : {out_path}\n")
+
+    df = pd.read_csv(src)
     if limit:
         # Ambil yang skor judulnya tertinggi kalau harus membatasi.
         # Lebih baik 3.000 artikel paling relevan daripada 3.000 acak.
+        #
+        # CATATAN: untuk sampel VALIDASI jangan pakai --limit-articles.
+        # Pengurutan berdasarkan skor membuat sampel bias ke artikel dengan
+        # judul padat kata kunci (live blog), yang justru paling sering gagal
+        # di-parse -- sehingga success rate terlihat jauh lebih buruk dari
+        # kenyataannya. Sampel validasi harus acak dan terstratifikasi.
         df = df.sort_values("title_score", ascending=False).head(limit)
         print(f"Dibatasi ke {limit:,} artikel dengan skor judul tertinggi")
 
     done_urls = set()
-    for f in ARTICLE_CKPT.glob("*.jsonl"):
+    for f in ckptdir.glob("*.jsonl"):
         for line in f.read_text(encoding="utf-8").splitlines():
             if line:
                 done_urls.add(json.loads(line).get("url"))
@@ -472,7 +512,7 @@ def run_stage3(limit=None):
             failed += 1
 
         if i % 200 == 0 or i == len(todo):
-            ckpt = ARTICLE_CKPT / f"batch_{batch_no}_{i}.jsonl"
+            ckpt = ckptdir / f"batch_{batch_no}_{i}.jsonl"
             with ckpt.open("w", encoding="utf-8") as f:
                 for r in buffer:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -483,12 +523,29 @@ def run_stage3(limit=None):
 
     # -- gabungkan semua checkpoint --
     rows = []
-    for f in ARTICLE_CKPT.glob("*.jsonl"):
+    for f in ckptdir.glob("*.jsonl"):
         for line in f.read_text(encoding="utf-8").splitlines():
             if line:
                 rows.append(json.loads(line))
 
     out = pd.DataFrame(rows).drop_duplicates(subset=["url"])
+
+        # -- buang konten berbayar --
+    # CNBC Pro dan Investing Club adalah kolom OPINI INVESTASI, bukan
+    # pelaporan peristiwa. Judulnya sering menyebut peristiwa geopolitik
+    # ("Tech has held up during Iran war"), tapi sentimennya mencerminkan
+    # pandangan terhadap saham tertentu, bukan intensitas peristiwanya.
+    # Memasukkannya akan mencampur dua jenis sinyal yang berbeda.
+    #
+    # Filter ditaruh di sini, bukan di tahap 2, karena URL artikel berbayar
+    # tidak bisa dibedakan dari artikel biasa -- keduanya memakai pola
+    # /YYYY/MM/DD/slug.html. Status berbayar baru terbaca dari meta tag
+    # article:section setelah halaman diambil. Konsekuensinya halaman tetap
+    # ter-download; yang dihemat adalah kebersihan dataset, bukan waktu.
+    sec = out.get("section", pd.Series("", index=out.index)).fillna("").str.lower()
+    berbayar = sec.str.contains("pro:|investing club", regex=True)
+    n_berbayar = int(berbayar.sum())
+    out = out[~berbayar].copy()
 
     # Samakan skema kolom dengan yang diharapkan preprocess_news.py,
     # supaya pipeline hilir tidak perlu diubah sama sekali.
@@ -502,21 +559,27 @@ def run_stage3(limit=None):
     # Gabungkan deskripsi dan isi artikel. Isi dipotong 2.000 karakter:
     # paragraf pembuka berita memuat inti peristiwa, sisanya konteks dan
     # kutipan yang justru menambah noise untuk tugas klasifikasi harian.
+    #
+    # CATATAN: baris ini MENIMPA deskripsi asli. Kalau nanti deskripsi murni
+    # dibutuhkan (mis. sebagai fallback untuk artikel live blog yang body-nya
+    # kosong), salin dulu ke kolom lain sebelum penimpaan ini.
     out["description"] = (
         out.get("description", "").fillna("")
         + " "
         + out.get("body", "").fillna("").str.slice(0, 2000)
     ).str.strip()
 
-    out.to_csv(C.CNBC_RAW_CSV, index=False)
+    out.to_csv(out_path, index=False)
 
     print("\n" + "=" * 55)
+    print(f"  Dibuang (berbayar): {n_berbayar:,}")
     print(f"  Artikel terkumpul : {len(out):,}")
     print(f"  Punya isi artikel : {out['body'].notna().sum():,}")
     print(f"  Punya timestamp   : {out['published'].notna().sum():,}")
-    print(f"  Tersimpan         : {C.CNBC_RAW_CSV}")
+    print(f"  Tersimpan         : {out_path}")
     print("=" * 55)
     print("\n  Lanjutkan dengan: python preprocess_news.py")
+    
 
 
 if __name__ == "__main__":
@@ -526,6 +589,12 @@ if __name__ == "__main__":
     ap.add_argument("--stage2", action="store_true", help="filter judul")
     ap.add_argument("--stage3", action="store_true", help="panen artikel")
     ap.add_argument("--limit-articles", type=int, default=None)
+    ap.add_argument("--index-file", type=str, default=None,
+                    help="input tahap 3 pengganti cnbc_shortlist.csv")
+    ap.add_argument("--out-csv", type=str, default=None,
+                    help="output tahap 3 pengganti CNBC_RAW_CSV")
+    ap.add_argument("--ckpt-dir", type=str, default=None,
+                    help="folder checkpoint tahap 3 pengganti checkpoints/articles")
     a = ap.parse_args()
 
     if a.probe:
@@ -535,6 +604,6 @@ if __name__ == "__main__":
     elif a.stage2:
         run_stage2()
     elif a.stage3:
-        run_stage3(a.limit_articles)
+        run_stage3(a.limit_articles, a.index_file, a.out_csv, a.ckpt_dir)
     else:
         ap.print_help()
