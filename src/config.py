@@ -133,12 +133,21 @@ GEO_LEXICON = {
     "invasion": 2, "airstrike": 2, "ceasefire": 2, "warfare": 2,
     "geopolitical": 2, "opec": 2, "nato": 2, "annexation": 2, "coup": 2,
     "export controls": 2, "trade war": 2, "missile": 2, "warship": 2,
+
+    # tambahan arin
+    "hormuz": 2, "red sea": 2, "houthi": 2, "zelenskyy": 2, "putin": 2, 
+    "kyiv": 2, "moscow": 1, "hamas": 2, "hezbollah": 2, "netanyahu": 1,
+    "tehran": 2, "pyongyang": 2, "xi jinping": 1, "geopolitics": 2,
+    "trade deal": 1, "import duty": 2, "export ban": 2, "opec+": 2,
+    "strait": 1, "annex": 2, "proxy war": 2, "arms": 1, "beijing": 1, "us china tensions": 2, "chinese military": 2,
+    "south china sea": 2, "chip export": 2,
+
     # bobot 1
     "war": 1, "conflict": 1, "military": 1, "troops": 1, "diplomatic": 1,
     "tension": 1, "tensions": 1, "retaliation": 1, "escalation": 1,
     "russia": 1, "ukraine": 1, "israel": 1, "gaza": 1, "iran": 1,
-    "china": 1, "taiwan": 1, "north korea": 1, "kremlin": 1, "beijing": 1,
-    "oil": 1, "crude": 1, "pipeline": 1, "supply chain": 1, "blockade": 1,
+    "taiwan": 1, "north korea": 1, "kremlin": 1, "beijing": 1,
+    "oil": 1, "crude": 1, "pipeline": 1, "blockade": 1,
     "treaty": 1, "summit": 1, "border": 1, "defense": 1, "security council": 1,
 }
 
@@ -153,7 +162,8 @@ NEGATIVE_LEXICON = [
     "best credit card", "recipe", "celebrity", "box office", "nfl", "nba",
     "super bowl", "how to save money", "gift guide", "black friday deal",
     "horoscope", "royal family", "movie review", "album review",
-    "fantasy football", "product review", "prime day",
+    "fantasy football", "product review", "prime day", "gaming stocks", "hire", "hiring", "holiday season", "earnings beat",
+    "quarterly results", "stocks to buy", "analyst upgrade",
 ]
 
 # Tipe konten yang dibuang: bukan artikel teks.
