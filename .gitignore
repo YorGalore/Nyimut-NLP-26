@@ -9,7 +9,7 @@ __pycache__/
 
 # hasil scraping CNBC — ribuan file, berubah terus
 data/raw/checkpoints/
-data/raw/cnbc_*
+
 
 # log
 logs/*
