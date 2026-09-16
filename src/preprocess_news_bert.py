@@ -23,6 +23,9 @@ import unicodedata
 
 import pandas as pd
 
+import config as C
+from align import build_assigner  # cutoff 08:00 WIB + roll-forward hari kerja BI -- lihat align.py
+
 
 # ---------------------------------------------------------------------------
 # Normalisasi karakter "keriting" -> versi standar (sama seperti
@@ -224,6 +227,58 @@ def n_chunks_needed(n_tokens, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP):
     return 1 + math.ceil((n_tokens - max_len) / stride)
 
 
+_TRADING_DATES = None  # cache -- kurs_clean.csv dibaca sekali saja
+
+
+def _get_trading_dates():
+    global _TRADING_DATES
+    if _TRADING_DATES is None:
+        kurs = pd.read_csv(C.KURS_CLEAN_CSV)
+        kurs["date"] = pd.to_datetime(kurs["date"], errors="coerce")
+        _TRADING_DATES = sorted(kurs["date"].dt.date.unique())
+    return _TRADING_DATES
+
+
+def add_alignment_columns(df, dt_wib):
+    """
+    Menambahkan target_date, is_offhours, hours_to_fixing, target_date_lag1 --
+    LOGIKA SAMA PERSIS dengan align.py (dipakai ulang lewat import
+    build_assigner, bukan ditulis ulang) supaya cutoff jalur BERT konsisten
+    dengan jalur TF-IDF (news_tfidf_clean.csv):
+
+      - Cutoff 08:00 WIB, BUKAN jam publikasi resmi JISDOR (10:00 WIB).
+        Berita terbit 09:30 WIB secara teknis sebelum publikasi 10:00, tapi
+        informasinya kemungkinan sudah terserap sebagian ke transaksi
+        antarbank yang membentuk fixing tersebut -- pakai jam publikasi
+        resmi sebagai cutoff akan look-ahead bias secara halus.
+      - Kalau tanggal hasil cutoff bukan hari kerja BI, digulirkan maju ke
+        hari kerja BI berikutnya (roll-forward, bukan roll-backward/dibuang).
+
+    Beda dengan align.py: baris yang tidak dapat target_date (berita setelah
+    fixing terakhir di kurs_clean.csv) TIDAK dibuang di sini -- cukup NaT,
+    supaya jumlah baris cnbc_bert_clean.csv tidak berubah karena alignment.
+    """
+    trading_dates = _get_trading_dates()
+    assign = build_assigner(trading_dates)
+
+    df = df.copy()
+    df["target_date"] = pd.to_datetime(dt_wib.apply(assign))
+
+    df["is_offhours"] = (
+        (dt_wib.dt.dayofweek >= 5) | (dt_wib.dt.hour >= C.ALIGNMENT_CUTOFF_HOUR)
+    )
+    df["hours_to_fixing"] = (
+        df["target_date"]
+        + pd.Timedelta(hours=C.ALIGNMENT_CUTOFF_HOUR)
+        - dt_wib.dt.tz_localize(None)
+    ).dt.total_seconds() / 3600
+
+    next_map = {d: trading_dates[i + 1] for i, d in enumerate(trading_dates[:-1])}
+    df["target_date_lag1"] = pd.to_datetime(df["target_date"].dt.date.map(next_map))
+
+    return df
+
+
 def build_dataset(df, tokenizer):
     """
     df: DataFrame mentah dari cnbc_raw.csv (kolom url, title, published, body,
@@ -266,9 +321,12 @@ def build_dataset(df, tokenizer):
     df["_sort_dt"] = dt_wib
     df["date"] = dt_wib.dt.strftime("%Y-%m-%d %I:%M:%S %p WIB")
 
+    df = add_alignment_columns(df, dt_wib)
+
     out_cols = [
         "url", "date", "title", "text_clean", "n_tokens",
         "needs_chunking", "n_chunks_est", "used_description_fallback", "section",
+        "target_date", "is_offhours", "hours_to_fixing", "target_date_lag1",
     ]
     out = df[[c for c in out_cols if c in df.columns] + ["_sort_dt"]].sort_values("_sort_dt")
     out = out.drop(columns=["_sort_dt"])
