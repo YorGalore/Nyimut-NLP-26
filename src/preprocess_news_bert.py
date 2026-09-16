@@ -258,13 +258,20 @@ def build_dataset(df, tokenizer):
     df["needs_chunking"] = df["n_tokens"] > CHUNK_MAX_LEN
     df["n_chunks_est"] = df["n_tokens"].apply(n_chunks_needed)
 
-    df["date"] = pd.to_datetime(df["published"], utc=True, errors="coerce", format="mixed")
+    # Waktu disimpan dalam WIB (Asia/Jakarta), format 12-jam AM/PM -- dipakai
+    # untuk sorting kronologis SEBELUM diformat jadi teks, supaya urutannya
+    # tetap benar (string AM/PM tidak bisa diurutkan langsung sebagai teks).
+    dt_utc = pd.to_datetime(df["published"], utc=True, errors="coerce", format="mixed")
+    dt_wib = dt_utc.dt.tz_convert("Asia/Jakarta")
+    df["_sort_dt"] = dt_wib
+    df["date"] = dt_wib.dt.strftime("%Y-%m-%d %I:%M:%S %p WIB")
 
     out_cols = [
         "url", "date", "title", "text_clean", "n_tokens",
         "needs_chunking", "n_chunks_est", "used_description_fallback", "section",
     ]
-    out = df[[c for c in out_cols if c in df.columns]].sort_values("date")
+    out = df[[c for c in out_cols if c in df.columns] + ["_sort_dt"]].sort_values("_sort_dt")
+    out = out.drop(columns=["_sort_dt"])
     return out, log
 
 
