@@ -190,8 +190,8 @@ def main():
     log.append(("2. Setelah dedup judul", len(df)))
 
     # --- TAHAP 2: buang tipe non-artikel ------------------------------------
-    type_l = df["type"].astype(str).str.lower()
-    sect_l = df["section"].astype(str).str.lower()
+    type_l = df["type"].fillna("").astype(str).str.lower()
+    sect_l = df["section"].fillna("").astype(str).str.lower()
     mask_type = type_l.isin(C.DROP_TYPES)
     mask_sect = sect_l.apply(lambda s: any(k in s for k in C.DROP_SECTION_KEYWORDS))
     df = df[~(mask_type | mask_sect)]
