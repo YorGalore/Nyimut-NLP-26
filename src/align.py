@@ -2,7 +2,7 @@
 align.py
 ========
 Menyelaraskan berita (24/7) dengan kurs JISDOR (hanya hari kerja BI).
-news_clean.csv + kurs_clean.csv -> news_clean.csv (+kolom) & aligned_daily.csv
+news_tfidf_clean.csv + kurs_clean.csv -> news_tfidf_clean.csv (+kolom) & aligned_daily.csv
 
 DASAR ATURANNYA
 ---------------
@@ -37,9 +37,15 @@ KENAPA ROLL-FORWARD, BUKAN ROLL-BACKWARD ATAU DIBUANG?
   menggerakkan pasar.
 
 KETERBATASAN YANG KAMI AKUI (wajib ditulis di laporan):
-Hari Senin menerima jendela ~72 jam (Jumat 08:00 -> Senin 08:00), sedangkan
-Rabu hanya 24 jam. Volume berita Senin jadi ~3x lipat. Karena itu kolom
-n_news dan window_hours disimpan agar bisa dinormalisasi di Tugas 2.
+Hari Senin menerima jendela ~63 jam (Jumat 08:00 -> Senin 08:00), sedangkan
+hari lain cuma ~30 jam -- window_hours membuktikan roll-forward bekerja.
+TAPI n_news mentah Senin TIDAK ikut ~2x lipat seperti dugaan awal: volume
+publikasi CNBC di akhir pekan jauh lebih sepi (berita/jam Senin ~0.046,
+hari lain ~0.11-0.13), jadi jendela lebih lebar tidak otomatis berarti
+lebih banyak berita absolut. Karena itu JANGAN bandingkan n_news mentah
+antar hari -- kolom n_news dan window_hours disimpan justru supaya bisa
+dinormalisasi (n_news / window_hours) sebelum dibandingkan, baik di sini
+maupun saat modeling Tugas 2.
 
 Kalender hari kerja BI TIDAK diambil dari library hari libur. Kalender itu
 diturunkan langsung dari himpunan tanggal yang ada di kurs_clean.csv.
@@ -82,11 +88,15 @@ def build_assigner(trading_dates):
 
 
 def main():
-    news = pd.read_csv(C.NEWS_CLEAN_CSV)
+    news = pd.read_csv(C.NEWS_TFIDF_CSV)
     kurs = pd.read_csv(C.KURS_CLEAN_CSV)
 
     news["published_wib"] = pd.to_datetime(news["published_wib"], errors="coerce")
     kurs["date"] = pd.to_datetime(kurs["date"], errors="coerce")
+
+    # n_tokens tidak disimpan di news_tfidf_clean.csv -- dihitung ulang dari
+    # text_norm (title_clean/text_clean sudah tidak ada, itu jalur BERT).
+    news["n_tokens"] = news["text_norm"].fillna("").str.split().str.len()
 
     trading_dates = sorted(kurs["date"].dt.date.unique())
     print(f"Hari kerja BI terdeteksi dari JISDOR: {len(trading_dates)} hari")
@@ -126,24 +136,24 @@ def main():
         news["target_date"].dt.date.map(next_map)
     )
 
-    news.to_csv(C.NEWS_CLEAN_CSV, index=False)
-    print(f"news_clean.csv diperbarui dengan kolom target_date")
+    news.to_csv(C.NEWS_TFIDF_CSV, index=False)
+    print(f"news_tfidf_clean.csv diperbarui dengan kolom target_date")
 
     # ------------------------------------------------------------------
     # 3. Agregasi ke level harian
     # ------------------------------------------------------------------
-    # news_clean.csv (level artikel) TETAP disimpan dan tidak dibuang --
+    # news_tfidf_clean.csv (level artikel) TETAP disimpan dan tidak dibuang --
     # Tugas 3 (multimodal) membutuhkan granularitas per artikel.
+    # headlines/text_concat (dari title_clean/text_clean) sudah tidak ada di
+    # sini -- itu jalur BERT, ditangani script terpisah milik rekan tim.
     daily = (
         news.groupby("target_date")
         .agg(
-            n_news=("article_id", "count"),
+            n_news=("url", "count"),
             mean_relevance=("relevance_score", "mean"),
             max_relevance=("relevance_score", "max"),
             mean_tokens=("n_tokens", "mean"),
             pct_offhours=("is_offhours", "mean"),
-            headlines=("title_clean", lambda s: " || ".join(s.astype(str))),
-            text_concat=("text_clean", lambda s: " ".join(s.astype(str))),
             text_norm_concat=("text_norm", lambda s: " ".join(s.astype(str))),
         )
         .reset_index()
@@ -155,11 +165,10 @@ def main():
     # juga informasi, dan menghapusnya akan merusak kontinuitas deret waktu.
     merged = kurs.merge(daily, on="date", how="left")
     merged["n_news"] = merged["n_news"].fillna(0).astype(int)
-    for col in ["headlines", "text_concat", "text_norm_concat"]:
-        merged[col] = merged[col].fillna("")
+    merged["text_norm_concat"] = merged["text_norm_concat"].fillna("")
 
     # Lebar jendela berita yang mengalir ke hari ini. Wajib dipakai sebagai
-    # kontrol saat modeling, karena Senin punya jendela ~3x lebih lebar.
+    # kontrol saat modeling, karena Senin punya jendela ~2x lebih lebar.
     merged["window_hours"] = merged["gap_days"].fillna(1) * 24
 
     merged.to_csv(C.ALIGNED_DAILY_CSV, index=False)
@@ -178,12 +187,22 @@ def main():
     print(f"  Rata-rata berita per hari      : {merged['n_news'].mean():.1f}")
     print(f"  Median berita per hari         : {merged['n_news'].median():.0f}")
     print(f"  Hari tanpa berita sama sekali  : {(merged['n_news'] == 0).sum()}")
-    print("\n  Rata-rata jumlah berita per hari dalam seminggu")
-    print("  (Senin WAJIB lebih tinggi -- itu bukti aturan roll-forward bekerja):")
+
+    # Bukti roll-forward yang benar adalah window_hours (lebar jendela waktu),
+    # BUKAN n_news mentah -- n_news mentah dipengaruhi juga oleh volume
+    # publikasi CNBC yang naik-turun per hari (weekend jauh lebih sepi),
+    # jadi Senin tidak otomatis punya n_news tertinggi meski jendelanya
+    # paling lebar. Makanya dua baris di bawah ditampilkan berdampingan.
+    per_dow = merged.groupby("dow").agg(
+        window_hours=("window_hours", "mean"),
+        n_news=("n_news", "mean"),
+    )
+    per_dow["news_per_hour"] = per_dow["n_news"] / per_dow["window_hours"]
+    print("\n  Per hari dalam seminggu (window_hours = bukti roll-forward,")
+    print("  n_news mentah JANGAN dibandingkan langsung -- lihat news_per_hour):")
     print(
-        merged.groupby("dow")["n_news"].mean()
-        .reindex(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
-        .round(1).to_string()
+        per_dow.reindex(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
+        .round(3).to_string()
     )
     print(f"\n  Tersimpan: {C.ALIGNED_DAILY_CSV}")
 

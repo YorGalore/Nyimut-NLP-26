@@ -32,7 +32,7 @@ JISDOR_RAW_CSV = DATA_RAW / "jisdor_raw.csv"
 NEWS_DEDUP_CSV = DATA_INTERIM / "cnbc_dedup.csv"
 NEWS_REJECTED_CSV = DATA_INTERIM / "cnbc_rejected.csv"  # bukti kerja filter
 
-NEWS_CLEAN_CSV = DATA_PROCESSED / "news_clean.csv"
+NEWS_TFIDF_CSV = DATA_PROCESSED / "news_tfidf_clean.csv"
 KURS_CLEAN_CSV = DATA_PROCESSED / "kurs_clean.csv"
 ALIGNED_DAILY_CSV = DATA_PROCESSED / "aligned_daily.csv"
 
