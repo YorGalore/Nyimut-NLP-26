@@ -1,36 +1,12 @@
-"""
-preprocess_news_bert.py
-========================
-Pipeline pembersihan teks khusus untuk model berbasis BERT (mis. FinBERT).
-
-BEDA DENGAN preprocess_news.py:
-  - Sumber teks: kolom `body` di data/raw/cnbc_raw.csv (artikel LENGKAP hasil
-    scraping HTML / "Stage 3"), bukan `description` yang terpotong ~2000 char.
-  - Cleaning MINIMAL: BERT punya tokenizer sendiri dan butuh teks senatural
-    mungkin. Yang dibuang HANYA noise struktural (tag HTML, URL, boilerplate
-    CNBC) -- BUKAN stopword, BUKAN tanda baca, BUKAN stemming, BUKAN lowercase.
-  - $, %, koma, titik (baik penutup kalimat maupun desimal) WAJIB dipertahankan
-    karena itu sinyal magnitudo yang penting untuk analisis dampak ke kurs.
-
-File ini TIDAK membaca/menulis apa pun secara otomatis saat di-import --
-hanya berisi fungsi cleaning + self_check(). Pipeline penuh menyusul di
-langkah berikutnya setelah cleaning-nya disetujui.
-"""
-
 import html
 import re
 import unicodedata
-
 import pandas as pd
-
 import config as C
-from align import build_assigner  # cutoff 08:00 WIB + roll-forward hari kerja BI -- lihat align.py
+from align import build_assigner  
 
 
-# ---------------------------------------------------------------------------
-# Normalisasi karakter "keriting" -> versi standar (sama seperti
-# preprocess_news.py, supaya konsisten di seluruh proyek)
-# ---------------------------------------------------------------------------
+# normalisasi karakter
 CURLY_MAP = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"',
@@ -42,35 +18,16 @@ RE_TAG = re.compile(r"<[^>]+>")
 RE_URL = re.compile(r"https?://\S+|www\.\S+")
 RE_WS = re.compile(r"\s+")
 RE_ZEROWIDTH = re.compile(r"[​-‏‪-‮﻿]")
-
-# Hanya dihapus kalau ada PERSIS di awal body -- ini label widget saham yang
-# ikut ter-scrape ("In this article XOM -1.2% ..."), bukan bagian kalimat.
-# Ditemukan di 1.534/1.535 kemunculan "in this article" pada corpus body;
-# 1 sisanya muncul di tengah kalimat asli dan harus tetap utuh, makanya
-# tidak dibuat jadi pola umum di tengah teks.
 RE_LEADING_WIDGET = re.compile(r"^\s*In this article\s*", re.IGNORECASE)
-
-# Footer panjang segmen Mad Money/Jim Cramer selalu muncul di AKHIR artikel
-# (Disclaimer, nomor telepon, akun sosial media) -- dihapus dari titik itu
-# sampai akhir teks, bukan cuma satu kalimat.
 RE_TRAILING_CRAMER = re.compile(
     r"Click here to read Jim Cramer's Guide to Investing.*$",
     re.IGNORECASE | re.DOTALL,
 )
 
-# ---------------------------------------------------------------------------
-# "Akhir kalimat yang aman": [^.]*\. polos berhenti tepat di tengah singkatan
-# seperti "U.S." / "U.K." (dibuktikan lewat pengujian di body asli -- lihat
-# docs/keputusan.md). Ini corpus geopolitik, jadi U.S./U.K./U.N./E.U. muncul
-# di HAMPIR SETIAP artikel. SENT_END memperlakukan 4 singkatan itu sebagai
-# satu token utuh supaya titik di dalamnya tidak dianggap akhir kalimat.
-# ---------------------------------------------------------------------------
+# akhir kalimat yang aman": [^.]*\. polos berhenti tepat di tengah singkatan
 SENT_END = r"(?:U\.S\.|U\.K\.|U\.N\.|E\.U\.|[^.])*\."
 
-# Boilerplate level-kalimat: dihapus hanya kalimat yang cocok, sisanya utuh.
-# Setiap pola di bawah SUDAH DIVERIFIKASI ke seluruh corpus body (6.770 baris)
-# -- bukan hanya diuji di contoh kecil -- supaya tidak ada kalimat asli yang
-# ikut terpotong (lihat catatan di bawah untuk pola yang SENGAJA tidak dipakai).
+# dihapus hanya kalimat yang cocok, sisanya utuh
 BOILERPLATE_PATTERNS = [
     r"Sign up (for|now)" + SENT_END,                       # 0/176 rusak di body
     r"Subscribe to CNBC on YouTube\.",                      # bentuk tetap, 39x
@@ -80,29 +37,13 @@ BOILERPLATE_PATTERNS = [
     r"Correction:\s*This (story|article)" + SENT_END,       # diperbaiki dgn SENT_END
     r"Disclosure:" + SENT_END,                              # 0/50 rusak di body
     r"This is breaking news\.?\s*(Please )?check back for updates\.?",
-    # Kalimat pembuka template kolom "CNBC Daily Open" -- identik di 26/6.770
-    # artikel (bukan iklan, tapi framing berulang tanpa sinyal unik).
     r"This report is from today'?s CNBC Daily Open[^.]*\.\s*"
     r"CNBC Daily Open brings investors up to speed[^.]*\.\s*"
     r"Like what you see\?\s*You can subscribe here\s*\.",
 ]
 RE_BOILER = [re.compile(p, re.IGNORECASE) for p in BOILERPLATE_PATTERNS]
 
-# SENGAJA TIDAK dijadikan pola auto-strip meski terlihat seperti boilerplate:
-# "Don't miss ...", "Read more: ...", "Follow CNBC ..." (bentuk umum).
-# Di kolom `body`, ketiganya adalah judul tautan yang nempel LANGSUNG ke
-# paragraf berikutnya tanpa titik pemisah -- diuji ke corpus asli, regex
-# manapun yang mencari "titik berikutnya" akan ikut memakan kalimat ASLI yang
-# tidak berkaitan (terbukti: satu artikel kehilangan kalimat soal CPI-W/Social
-# Security gara-gara dianggap sambungan "Don't miss ..."). Lebih aman
-# membiarkan noise ini di teks daripada berisiko memotong konten asli.
-
-
 def clean_text(text):
-    """
-    Bersihkan satu teks artikel untuk BERT: hapus noise struktural,
-    pertahankan kapitalisasi, tanda baca, angka, $, dan %.
-    """
     if not isinstance(text, str) or not text.strip():
         return ""
 
@@ -128,11 +69,7 @@ def clean_text(text):
 
 
 def self_check():
-    """
-    Bukti bahwa cleaning tidak merusak sinyal yang harus dipertahankan:
-    $ + angka, titik (kalimat & desimal), %, dan tidak menghapus konten asli
-    yang kebetulan mirip pola boilerplate.
-    """
+    # bukti bahwa cleaning tidak merusak sinyal yang harus dipertahankan
     cases = [
         (
             "Oil rose to $85.40 a barrel. Stocks fell 2.3%.",
@@ -169,18 +106,12 @@ def self_check():
             "Tepid markets rose 0.4% on Monday.",
         ),
         (
-            # Kasus nyata dari corpus: [^.]*\. polos akan berhenti di "U." saja
-            # dan menyisakan pecahan "S. Deputy..." -- SENT_END harus melewati
-            # "U.S." utuh dan berhenti di titik akhir kalimat yang sebenarnya.
             "Correction: This story has been updated to remove an incorrect "
             "reference to where U.S. Deputy Treasury Secretary Wally Adeyemo "
             "was speaking. Real reporting continues here.",
             "Real reporting continues here.",
         ),
         (
-            # "Don't miss ..." SENGAJA tidak dihapus -- dibiarkan utuh karena
-            # tidak ada pemisah kalimat yang aman di kolom body (lihat komentar
-            # di BOILERPLATE_PATTERNS).
             "Don't miss these tax strategies during the sell-off. Inflation data released Thursday shows CPI rose 2.2%.",
             "Don't miss these tax strategies during the sell-off. Inflation data released Thursday shows CPI rose 2.2%.",
         ),
@@ -203,9 +134,6 @@ def self_check():
     return all_ok
 
 
-# ---------------------------------------------------------------------------
-# PIPELINE (dipakai baik untuk uji coba sampel maupun produksi penuh)
-# ---------------------------------------------------------------------------
 import argparse
 import math
 import os
@@ -215,20 +143,13 @@ CHUNK_OVERLAP = 50     # overlap antar potongan untuk strategi B (chunking)
 
 
 def n_chunks_needed(n_tokens, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP):
-    """
-    Perkiraan jumlah potongan (chunk) yang dibutuhkan strategi B
-    (chunking + overlap, embedding dirata-ratakan). Dipakai untuk
-    memperkirakan biaya komputasi, BUKAN untuk chunking-nya sendiri --
-    chunking beneran dilakukan di tahap embedding/modeling, bukan di sini.
-    """
+    # perkiraan jumlah potongan (chunk) yang dibutuhkan strategi
     if n_tokens <= max_len:
         return 1
     stride = max_len - overlap
     return 1 + math.ceil((n_tokens - max_len) / stride)
 
-
-_TRADING_DATES = None  # cache -- kurs_clean.csv dibaca sekali saja
-
+_TRADING_DATES = None  # cache, kurs_clean.csv dibaca sekali saja
 
 def _get_trading_dates():
     global _TRADING_DATES
@@ -240,24 +161,7 @@ def _get_trading_dates():
 
 
 def add_alignment_columns(df, dt_wib):
-    """
-    Menambahkan target_date, is_offhours, hours_to_fixing, target_date_lag1 --
-    LOGIKA SAMA PERSIS dengan align.py (dipakai ulang lewat import
-    build_assigner, bukan ditulis ulang) supaya cutoff jalur BERT konsisten
-    dengan jalur TF-IDF (news_tfidf_clean.csv):
-
-      - Cutoff 08:00 WIB, BUKAN jam publikasi resmi JISDOR (10:00 WIB).
-        Berita terbit 09:30 WIB secara teknis sebelum publikasi 10:00, tapi
-        informasinya kemungkinan sudah terserap sebagian ke transaksi
-        antarbank yang membentuk fixing tersebut -- pakai jam publikasi
-        resmi sebagai cutoff akan look-ahead bias secara halus.
-      - Kalau tanggal hasil cutoff bukan hari kerja BI, digulirkan maju ke
-        hari kerja BI berikutnya (roll-forward, bukan roll-backward/dibuang).
-
-    Beda dengan align.py: baris yang tidak dapat target_date (berita setelah
-    fixing terakhir di kurs_clean.csv) TIDAK dibuang di sini -- cukup NaT,
-    supaya jumlah baris cnbc_bert_clean.csv tidak berubah karena alignment.
-    """
+    # Menambahkan target_date, is_offhours, hours_to_fixing, target_date_lag1 
     trading_dates = _get_trading_dates()
     assign = build_assigner(trading_dates)
 
@@ -280,10 +184,6 @@ def add_alignment_columns(df, dt_wib):
 
 
 def build_dataset(df, tokenizer):
-    """
-    df: DataFrame mentah dari cnbc_raw.csv (kolom url, title, published, body,
-    description, ...). Mengembalikan (out_df, log) siap ditulis ke CSV.
-    """
     log = [("0. Baris masuk", len(df))]
 
     df = df.copy()
@@ -313,9 +213,7 @@ def build_dataset(df, tokenizer):
     df["needs_chunking"] = df["n_tokens"] > CHUNK_MAX_LEN
     df["n_chunks_est"] = df["n_tokens"].apply(n_chunks_needed)
 
-    # Waktu disimpan dalam WIB (Asia/Jakarta), format 12-jam AM/PM -- dipakai
-    # untuk sorting kronologis SEBELUM diformat jadi teks, supaya urutannya
-    # tetap benar (string AM/PM tidak bisa diurutkan langsung sebagai teks).
+    # waktu disimpan dalam WIB 
     dt_utc = pd.to_datetime(df["published"], utc=True, errors="coerce", format="mixed")
     dt_wib = dt_utc.dt.tz_convert("Asia/Jakarta")
     df["_sort_dt"] = dt_wib
@@ -334,7 +232,7 @@ def build_dataset(df, tokenizer):
 
 
 def stratified_sample(df, n, seed=42):
-    """Sampel acak terstratifikasi per tahun publikasi (proporsional)."""
+    #Sampel acak terstratifikasi per tahun publikasi 
     years = pd.to_datetime(df["published"], utc=True, errors="coerce", format="mixed").dt.year
     frac = n / len(df)
     sampled = (
