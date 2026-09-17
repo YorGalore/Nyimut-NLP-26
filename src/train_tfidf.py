@@ -1,50 +1,11 @@
-"""
-train_tfidf.py
-===============
-Baseline TF-IDF + Logistic Regression: memprediksi arah kurs JISDOR
-(up/down/flat) dari teks berita geopolitik yang terbit di jendela hari itu.
-data/processed/aligned_daily.csv -> logs/train_tfidf_report.txt
-
-UNIT ANALISIS: PER HARI, BUKAN PER ARTIKEL
--------------------------------------------
-Target (`direction`) adalah label harian (satu label per fixing JISDOR).
-Karena itu fitur teksnya juga harus per hari: `text_norm_concat` di
-aligned_daily.csv (gabungan text_norm semua artikel yang jatuh di jendela
-hari itu, hasil kerja align.py). Bukan per-artikel -- itu granularitas yang
-salah untuk target harian.
-
-HARI TANPA BERITA DIBUANG DARI TRAINING
-----------------------------------------
-align.py sengaja mempertahankan hari kerja BI tanpa berita (n_news=0,
-text_norm_concat="") supaya deret waktu kurs tetap utuh untuk Tugas 2/3.
-Tapi untuk model TF-IDF, dokumen kosong tidak punya sinyal apa pun --
-disertakan hanya akan menambah kelas mayoritas secara artifisial dan
-mencemari classification report. Baris ini di-drop DI SINI, bukan di
-align.py, supaya file itu tetap dipakai bersama Tugas 2/3.
-
-SPLIT BERDASARKAN WAKTU, BUKAN ACAK
--------------------------------------
-Ini deret waktu. Random split akan membiarkan model "mengintip" kosakata
-dari peristiwa masa depan (mis. kata "houthi" cuma muncul di 2024) untuk
-memprediksi masa lalu -- look-ahead bias yang sama seperti yang dihindari
-align.py. Split 80/20 kronologis: 20% hari TERAKHIR jadi test set.
-
-KENAPA class_weight="balanced"?
-"flat" cuma ~11% dari data (zona mati log_return < FLAT_THRESHOLD).
-Tanpa pembobotan, model paling gampang menang dengan selalu menebak "up"
-(kelas mayoritas) dan skor recall "flat"/"down" nyaris nol.
-"""
-
 import json
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.dummy import DummyClassifier
-
 import config as C
 
 TEST_FRACTION = 0.2
@@ -80,7 +41,7 @@ def main():
     log(df["direction"].value_counts().to_string())
     log()
 
-    # --- split kronologis -----------------------------------------------
+    # split kronologis
     split_idx = int(len(df) * (1 - TEST_FRACTION))
     train, test = df.iloc[:split_idx], df.iloc[split_idx:]
     log(f"Train: {len(train):,} hari ({train['date'].min().date()} .. {train['date'].max().date()})")
@@ -91,7 +52,7 @@ def main():
     X_test_text = test["text_norm_concat"].fillna("")
     y_train, y_test = train["direction"], test["direction"]
 
-    # --- vectorize --------------------------------------------------------
+    # vectorize
     vectorizer = TfidfVectorizer(
         min_df=MIN_DF, max_df=MAX_DF, ngram_range=NGRAM_RANGE,
         max_features=MAX_FEATURES,
@@ -101,12 +62,10 @@ def main():
     log(f"Ukuran vocabulary TF-IDF: {len(vectorizer.vocabulary_):,}")
     log()
 
-    # --- baseline: selalu tebak kelas mayoritas ---------------------------
+    # selalu tebak kelas mayoritas sebagai baseline
     dummy = DummyClassifier(strategy="most_frequent")
     dummy.fit(X_train, y_train)
     dummy_acc = accuracy_score(y_test, dummy.predict(X_test))
-
-    # --- model utama --------------------------------------------------------
     clf = LogisticRegression(max_iter=1000, class_weight="balanced")
     clf.fit(X_train, y_train)
     pred = clf.predict(X_test)
@@ -124,7 +83,7 @@ def main():
     log(confusion_matrix(y_test, pred, labels=sorted(y_test.unique())))
     log()
 
-    # --- term paling berpengaruh per kelas (untuk laporan) ------------------
+    # term paling berpengaruh per kelas
     feature_names = np.array(vectorizer.get_feature_names_out())
     log("Term dengan bobot koefisien tertinggi per kelas:")
     for i, cls in enumerate(clf.classes_):

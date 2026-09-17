@@ -1,60 +1,15 @@
-"""
-scrape_stage1_js.py
-===================
-Pengganti tahap 1 (panen indeks arsip CNBC) memakai Playwright.
-
-KENAPA HARUS BROWSER OTOMATIS
------------------------------
-Halaman arsip CNBC (cnbc.com/site-map/articles/2024/August/15/) mengembalikan
-HTTP 200 dengan HTML ~537 KB, tetapi daftar artikelnya TIDAK ada di dalam HTML
-itu. Daftar tersebut digambar oleh JavaScript setelah halaman dimuat.
-
-Dibuktikan lewat pengujian: requests + BeautifulSoup menemukan 0 link artikel;
-Playwright pada halaman yang sama menemukan 71 link. Karena itu tahap ini
-memakai browser sungguhan yang menjalankan JavaScript, lalu membaca DOM
-setelah render selesai.
-
-Tahap 2 dan 3 tidak berubah -- keduanya tetap memakai requests + BeautifulSoup,
-karena halaman artikel CNBC sudah berisi metadata lengkap di HTML mentahnya.
-
-DUA OPTIMASI KECEPATAN
-----------------------
-  1. Blokir gambar, font, CSS, media, dan iklan. Kita hanya butuh teks link;
-     mengunduh sisanya membuang ~80% bandwidth dan waktu.
-  2. Tunggu SELECTOR link artikel muncul, bukan menunggu waktu tetap.
-     Halaman yang sudah siap dalam 1 detik tidak perlu ditunggu 3 detik.
-
-Gabungan keduanya memangkas dari ~7 detik menjadi ~2-3 detik per halaman.
-
-CARA PAKAI
-----------
-    python scrape_stage1_js.py                    # semua, 1 Sep 2021 - 1 Sep 2026
-    python scrape_stage1_js.py --show             # tampilkan jendela browser
-    python scrape_stage1_js.py --start 2024-01-01 --end 2024-03-31
-
-Aman dihentikan dengan Ctrl+C. Progres disimpan per bulan; menjalankan ulang
-akan melanjutkan dari bulan yang belum selesai.
-
-Prasyarat:
-    pip install playwright
-    playwright install chromium
-"""
-
 import argparse
 import json
 import re
 import time
 from datetime import date, timedelta
-
 import pandas as pd
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 import config as C
 
-# Nama bulan ditulis manual, tidak memakai strftime("%B").
-# strftime bergantung pada locale sistem -- kalau laptop diset ke bahasa
-# Indonesia, hasilnya jadi "Agustus" dan semua URL salah tanpa error apa pun.
+# nama bulan ditulis manual
 MONTHS = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -66,8 +21,7 @@ CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 RE_ART = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/[a-z0-9\-]+\.html")
 
-# Resource yang diblokir. Halaman arsip penuh gambar thumbnail dan skrip iklan
-# yang sama sekali tidak kita butuhkan.
+# resource yang diblokir
 BLOCK_TYPES = {"image", "media", "font", "stylesheet"}
 BLOCK_URL_HINTS = (
     "doubleclick", "googletagmanager", "google-analytics", "adsystem",
@@ -82,7 +36,6 @@ UA = (
 
 
 def archive_url(d):
-    """https://www.cnbc.com/site-map/articles/2024/August/15/"""
     return f"https://www.cnbc.com/site-map/articles/{d.year}/{MONTHS[d.month-1]}/{d.day}/"
 
 
@@ -96,29 +49,20 @@ def should_block(route):
 
 
 def scrape_day(page, d):
-    """
-    Ambil semua link artikel untuk satu tanggal.
-
-    Mengembalikan list of dict. List kosong berarti tidak ada artikel --
-    itu wajar untuk hari libur besar, jadi tidak diperlakukan sebagai error.
-    """
+    # ambil semua link artikel untuk satu tanggal.
     url = archive_url(d)
-    # Selector yang spesifik ke tanggal halaman ini. Halaman arsip juga memuat
-    # link artikel lain di sidebar, jadi menunggu "a" apa pun akan menipu:
-    # sidebar muncul duluan, daftar utamanya belum.
+    # selector yang spesifik ke tanggal halaman ini
     datepath = f"/{d.year}/{d.month:02d}/{d.day:02d}/"
     selector = f"a[href*='{datepath}']"
 
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except PWTimeout:
-        return None  # None = gagal dimuat (beda dari [] = tidak ada artikel)
+        return None  # none = gagal dimuat (beda dari [] = tidak ada artikel)
 
     try:
         page.wait_for_selector(selector, timeout=12000)
     except PWTimeout:
-        # Tidak ada link bertanggal ini setelah 12 detik.
-        # Bisa berarti hari itu memang kosong, atau render gagal.
         return []
 
     pairs = page.eval_on_selector_all(
@@ -132,7 +76,7 @@ def scrape_day(page, d):
         m = RE_ART.search(href)
         if not m:
             continue
-        # Verifikasi ulang tanggalnya, jangan percaya selector saja
+        # verifikasi ulang tanggalnya
         if (int(m.group(1)), int(m.group(2)), int(m.group(3))) != (d.year, d.month, d.day):
             continue
         title = (text or "").strip()
@@ -154,7 +98,7 @@ def main():
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
 
-    # Kelompokkan tanggal per bulan -> checkpoint jadi 61 file, bukan 1826
+    # kelompokkan tanggal per bulan -> checkpoint jadi 61 file
     months = {}
     d = start
     while d <= end:
@@ -192,7 +136,7 @@ def main():
                 rows = scrape_day(page, day)
                 if rows is None:
                     failed += 1
-                    # Satu kali percobaan ulang. Kegagalan biasanya sesaat.
+                    # satu kali percobaan ulang. Kegagalan biasanya sesaat.
                     time.sleep(3)
                     rows = scrape_day(page, day) or []
                 month_rows.extend(rows)
@@ -204,7 +148,7 @@ def main():
             )
             all_rows.extend(month_rows)
 
-            # Estimasi sisa waktu, dihitung dari kecepatan sebenarnya
+            # estimasi sisa waktu, dihitung dari kecepatan sebenarnya
             elapsed = time.time() - t0
             rate = done_days / elapsed if elapsed else 0
             eta = (total_days - done_days) / rate / 60 if rate else 0

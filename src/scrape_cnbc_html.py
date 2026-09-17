@@ -1,66 +1,3 @@
-"""
-scrape_cnbc_html.py
-===================
-Scraping berita CNBC dengan parsing HTML murni (requests + BeautifulSoup).
-Tidak memakai API apa pun.
-
-STRATEGI: SITEMAP ARSIP HARIAN
-------------------------------
-Halaman section CNBC (cnbc.com/world-economy) memuat kontennya lewat infinite
-scroll JavaScript, jadi requests hanya mendapat shell kosong. Tapi CNBC juga
-menyediakan halaman arsip per tanggal yang berisi daftar link artikel hari itu
-sebagai HTML statis biasa:
-
-    https://www.cnbc.com/site-map/articles/2024/January/15/
-
-Halaman itulah pintu masuk kita.
-
-TIGA TAHAP
-----------
-  Tahap 1  panen indeks    : 1.826 halaman arsip -> judul + URL (~300.000 baris)
-  Tahap 2  filter judul    : leksikon dijalankan SEBELUM fetch artikel,
-                             supaya tahap 3 hanya memproses yang relevan
-  Tahap 3  panen artikel   : fetch tiap artikel terpilih -> timestamp presisi,
-                             isi artikel penuh, author, section
-
-Tahap 2 diletakkan di tengah bukan di akhir karena itu satu-satunya cara
-membuat tahap 3 selesai dalam hitungan jam, bukan hari. Memfilter 300.000
-judul itu gratis; men-download 300.000 halaman tidak.
-
-CARA PAKAI
-----------
-    python scrape_cnbc_html.py --probe       # cari pola URL yang benar
-    python scrape_cnbc_html.py --stage1      # panen indeks (jalankan semalaman)
-    python scrape_cnbc_html.py --stage2      # filter judul
-    python scrape_cnbc_html.py --stage3      # panen artikel
-    python scrape_cnbc_html.py --stage3 --limit-articles 3000   # kalau mepet waktu
-
-Untuk menjalankan SAMPEL VALIDASI tanpa mencemari hasil produksi, tahap 3
-bisa diarahkan ke input, output, dan folder checkpoint yang berbeda:
-
-    python scrape_cnbc_html.py --stage3 \
-        --index-file data/raw/cnbc_shortlist_sampel.csv \
-        --out-csv    data/raw/cnbc_sampel_hasil.csv \
-        --ckpt-dir   data/checkpoints/articles_sampel
-
-Ini penting karena penggabungan hasil di akhir tahap 3 menyapu SELURUH isi
-folder checkpoint. Tanpa folder terpisah, artikel dari percobaan sebelumnya
-akan ikut masuk dan angka validasi jadi tidak bisa dipercaya.
-
-Setiap tahap bisa dihentikan (Ctrl+C) dan dilanjutkan. Progres disimpan.
-
-SOAL BOT DETECTION
-------------------
-CNBC memakai Akamai. Mitigasi berlapis di skrip ini:
-  - requests.Session persisten supaya cookie tersimpan antar request
-  - header browser lengkap (bukan hanya User-Agent)
-  - jeda acak, bukan jeda tetap
-  - backoff eksponensial saat kena 403/429
-  - kalau paket curl_cffi terpasang, otomatis dipakai untuk meniru TLS
-    fingerprint Chrome asli (paling ampuh melawan Akamai):
-        pip install curl_cffi
-"""
-
 import argparse
 import json
 import random
@@ -75,12 +12,8 @@ from bs4 import BeautifulSoup
 
 import config as C
 
-# ---------------------------------------------------------------------------
-# LAPISAN HTTP
-# ---------------------------------------------------------------------------
-# curl_cffi meniru TLS/JA3 fingerprint Chrome. Akamai memeriksa ini, dan
-# requests biasa punya fingerprint yang jelas-jelas bukan browser.
-# Kalau paketnya tidak ada, fallback ke requests biasa (sering tetap jalan).
+
+# lapisan http
 try:
     from curl_cffi import requests as _http
     _IMPERSONATE = {"impersonate": "chrome124"}
@@ -112,13 +45,7 @@ SESSION.headers.update(BROWSER_HEADERS)
 
 
 def get_html(url, max_retry=3):
-    """
-    Ambil HTML satu halaman, dengan retry dan backoff.
-
-    Mengembalikan string HTML, atau None kalau gagal permanen.
-    404 langsung dianggap gagal tanpa retry -- halaman arsip untuk tanggal
-    tertentu memang bisa saja tidak ada, dan mencoba ulang hanya buang waktu.
-    """
+    # Ambil HTML satu halaman, dengan retry dan backoff.
     for attempt in range(1, max_retry + 1):
         try:
             resp = SESSION.get(url, timeout=25, **_IMPERSONATE)
@@ -139,18 +66,9 @@ def get_html(url, max_retry=3):
 
 
 def polite_sleep(fast=False):
-    """
-    Jeda acak, bukan tetap. Interval yang terlalu teratur adalah pola yang
-    justru dikenali sebagai bot.
-    """
     time.sleep(random.uniform(0.4, 0.9) if fast else random.uniform(1.0, 2.0))
 
-
-# ---------------------------------------------------------------------------
-# POLA URL ARSIP
-# ---------------------------------------------------------------------------
-# Format persisnya belum diverifikasi. --probe akan mencoba semuanya dan
-# melaporkan mana yang hidup. Setelah ketahuan, isi ARCHIVE_PATTERN di bawah.
+# pola url archive
 URL_PATTERNS = {
     "month_name_cap": lambda d: f"https://www.cnbc.com/site-map/articles/{d.year}/{d.strftime('%B')}/{d.day}/",
     "month_name_low": lambda d: f"https://www.cnbc.com/site-map/articles/{d.year}/{d.strftime('%B').lower()}/{d.day}/",
@@ -159,7 +77,7 @@ URL_PATTERNS = {
     "no_trailing":    lambda d: f"https://www.cnbc.com/site-map/articles/{d.year}/{d.strftime('%B')}/{d.day}",
 }
 
-# Isi setelah --probe memberi tahu mana yang benar.
+# isi setelah --probe memberi tahu mana yang benar
 ARCHIVE_PATTERN = "month_name_cap"
 
 INDEX_CSV = C.DATA_RAW / "cnbc_index.csv"          # tahap 1
@@ -170,14 +88,10 @@ INDEX_CKPT.mkdir(parents=True, exist_ok=True)
 ARTICLE_CKPT.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# PROBE
-# ---------------------------------------------------------------------------
+
+# probe
 def run_probe():
-    """
-    Coba kelima pola URL pada satu tanggal, laporkan mana yang berhasil,
-    dan simpan HTML mentahnya supaya struktur tag bisa diperiksa manual.
-    """
+    # coba kelima pola URL pada satu tanggal, laporkan mana yang berhasil dan simpan HTML mentahnya supaya struktur tag bisa diperiksa manual
     test_day = date(2024, 1, 15)
     print(f"Menguji pola URL arsip untuk tanggal {test_day}\n")
 
@@ -218,20 +132,11 @@ def run_probe():
         print(f"    {a['href']}")
 
 
-# ---------------------------------------------------------------------------
-# TAHAP 1 -- PANEN INDEKS
-# ---------------------------------------------------------------------------
+# collect judul
 RE_ARTICLE_URL = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/")
 
-
 def parse_archive_page(html, day):
-    """
-    Parse satu halaman arsip harian -> daftar {title, url, date}.
-
-    Kita tidak bergantung pada nama class CSS di sini, melainkan pada POLA URL
-    artikel CNBC (/YYYY/MM/DD/slug.html). Nama class berubah tiap redesign;
-    struktur URL jauh lebih stabil. Ini keputusan desain yang disengaja.
-    """
+    # Parse satu halaman arsip harian -> daftar {title, url, date}.
     soup = BeautifulSoup(html, "html.parser")
     rows, seen = [], set()
 
@@ -255,13 +160,7 @@ def parse_archive_page(html, day):
 
 
 def run_stage1():
-    """
-    Loop semua tanggal dalam rentang tugas.
-
-    Checkpoint per BULAN, bukan per hari: 60 file, bukan 1.826.
-    Bulan yang sudah punya checkpoint otomatis dilewati, jadi skrip aman
-    dihentikan Ctrl+C dan dijalankan ulang.
-    """
+    # loop semua tanggal dalam rentang tugas, checkpoint per BULAN, bukan per hari: 60 file, bukan 1.826.
     fn = URL_PATTERNS[ARCHIVE_PATTERN]
     start = date.fromisoformat(C.START_DATE)
     end = date.fromisoformat(C.END_DATE)
@@ -316,18 +215,10 @@ def run_stage1():
         print("  Periksa data/raw/_probe_archive.html secara manual.")
 
 
-# ---------------------------------------------------------------------------
-# TAHAP 2 -- FILTER DI LEVEL JUDUL
-# ---------------------------------------------------------------------------
-def run_stage2():
-    """
-    Skor semua judul dengan leksikon dari config.py, ambil yang lolos ambang.
 
-    Ini filter berbasis JUDUL saja -- sengaja lebih longgar dari filter final
-    di preprocess_news.py, karena judul lebih pendek dan lebih mudah
-    melewatkan artikel relevan. Presisi diserahkan ke tahap berikutnya;
-    di sini yang penting recall.
-    """
+# filter judul
+def run_stage2():
+    # skor semua judul dengan leksikon dari config.py, ambil yang lolos ambang
     df = pd.read_csv(INDEX_CSV)
     print(f"Menyaring {len(df):,} judul...")
 
@@ -353,8 +244,6 @@ def run_stage2():
         lambda t: any(p.search(t) for p in neg)
     )
 
-    # Ambang 1 (bukan 2 seperti filter final): judul jauh lebih pendek dari
-    # judul+deskripsi, jadi ambang yang sama akan membuang terlalu banyak.
     keep = (df["title_score"] >= 1) & (~df["has_negative"])
     out = df[keep].sort_values("date")
     out.to_csv(SHORTLIST_CSV, index=False)
@@ -369,12 +258,9 @@ def run_stage2():
         print(f"    - {t[:85]}")
 
 
-# ---------------------------------------------------------------------------
-# TAHAP 3 -- PANEN ARTIKEL
-# ---------------------------------------------------------------------------
-# Selector ditulis sebagai daftar kandidat berurutan, bukan satu tebakan mati.
-# Nama class CNBC berubah tiap redesign; artikel lama dan baru bisa memakai
-# struktur berbeda. Kandidat pertama yang cocok dipakai.
+
+# panen artikel
+# selector ditulis sebagai daftar kandidat berurutan
 BODY_SELECTORS = [
     "div.ArticleBody-articleBody",
     "div[data-module='ArticleBody']",
@@ -384,20 +270,11 @@ BODY_SELECTORS = [
 
 
 def parse_article(html, url):
-    """
-    Ekstrak satu artikel.
-
-    Strategi utama: JSON-LD. CNBC menyematkan <script type="application/ld+json">
-    berisi metadata terstruktur (headline, datePublished, author, articleBody).
-    Ini jauh lebih stabil daripada mengejar nama class CSS, dan memberi
-    timestamp presisi detik yang kita butuhkan untuk aturan cutoff 08:00 WIB.
-
-    Kalau JSON-LD tidak ada, jatuh ke meta tag, lalu ke selector CSS.
-    """
+    # ekstrak 1 artikel
     soup = BeautifulSoup(html, "html.parser")
     rec = {"url": url}
 
-    # -- lapis 1: JSON-LD --
+    # lapis 1: JSON-LD 
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "{}")
@@ -422,7 +299,7 @@ def parse_article(html, url):
                 )
             break
 
-    # -- lapis 2: meta tag --
+    # lapis 2: meta tag
     def meta(prop):
         tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
         return tag.get("content") if tag else None
@@ -433,7 +310,7 @@ def parse_article(html, url):
     rec["published"] = rec.get("published") or meta("article:published_time")
     rec["section"] = meta("article:section") or meta("og:section")
 
-    # -- lapis 3: selector CSS untuk isi artikel --
+    # lapis 3: selector css
     if not rec.get("body"):
         for sel in BODY_SELECTORS:
             node = soup.select_one(sel)
@@ -447,25 +324,7 @@ def parse_article(html, url):
 
 
 def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
-    """
-    Fetch tiap artikel di shortlist.
-
-    Checkpoint per 200 artikel, dan artikel yang sudah pernah diambil
-    dilewati. Dengan begitu skrip bisa dihentikan kapan saja tanpa kehilangan
-    progres -- penting karena tahap ini yang paling lama.
-
-    PARAMETER OPSIONAL
-    ------------------
-    index_file  file input pengganti cnbc_shortlist.csv
-    out_csv     file output pengganti C.CNBC_RAW_CSV
-    ckpt_dir    folder checkpoint pengganti data/checkpoints/articles
-
-    Ketiganya ada supaya percobaan sampel validasi bisa dijalankan tanpa
-    mencemari hasil produksi. Penggabungan di akhir fungsi ini menyapu SELURUH
-    isi folder checkpoint, jadi menjalankan sampel di folder yang sama akan
-    mencampurnya dengan artikel dari percobaan sebelumnya. Kalau ketiganya
-    dibiarkan None, perilakunya persis sama seperti sebelum parameter ini ada.
-    """
+    # fetch tiap artikel di shortlist, checkpoint per 200 artikel
     src = Path(index_file) if index_file else SHORTLIST_CSV
     out_path = Path(out_csv) if out_csv else C.CNBC_RAW_CSV
     ckptdir = Path(ckpt_dir) if ckpt_dir else ARTICLE_CKPT
@@ -477,14 +336,7 @@ def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
 
     df = pd.read_csv(src)
     if limit:
-        # Ambil yang skor judulnya tertinggi kalau harus membatasi.
-        # Lebih baik 3.000 artikel paling relevan daripada 3.000 acak.
-        #
-        # CATATAN: untuk sampel VALIDASI jangan pakai --limit-articles.
-        # Pengurutan berdasarkan skor membuat sampel bias ke artikel dengan
-        # judul padat kata kunci (live blog), yang justru paling sering gagal
-        # di-parse -- sehingga success rate terlihat jauh lebih buruk dari
-        # kenyataannya. Sampel validasi harus acak dan terstratifikasi.
+        # ambil yang skor judulnya tertinggi kalau harus membatasi
         df = df.sort_values("title_score", ascending=False).head(limit)
         print(f"Dibatasi ke {limit:,} artikel dengan skor judul tertinggi")
 
@@ -521,7 +373,7 @@ def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
 
         polite_sleep(fast=True)
 
-    # -- gabungkan semua checkpoint --
+    # gabung semua checkpoint jadi satu CSV, buang artikel berbayar, samakan skema kolom
     rows = []
     for f in ckptdir.glob("*.jsonl"):
         for line in f.read_text(encoding="utf-8").splitlines():
@@ -530,24 +382,13 @@ def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
 
     out = pd.DataFrame(rows).drop_duplicates(subset=["url"])
 
-        # -- buang konten berbayar --
-    # CNBC Pro dan Investing Club adalah kolom OPINI INVESTASI, bukan
-    # pelaporan peristiwa. Judulnya sering menyebut peristiwa geopolitik
-    # ("Tech has held up during Iran war"), tapi sentimennya mencerminkan
-    # pandangan terhadap saham tertentu, bukan intensitas peristiwanya.
-    # Memasukkannya akan mencampur dua jenis sinyal yang berbeda.
-    #
-    # Filter ditaruh di sini, bukan di tahap 2, karena URL artikel berbayar
-    # tidak bisa dibedakan dari artikel biasa -- keduanya memakai pola
-    # /YYYY/MM/DD/slug.html. Status berbayar baru terbaca dari meta tag
-    # article:section setelah halaman diambil. Konsekuensinya halaman tetap
-    # ter-download; yang dihemat adalah kebersihan dataset, bukan waktu.
+    # buang konten berbayar
     sec = out.get("section", pd.Series("", index=out.index)).fillna("").str.lower()
     berbayar = sec.str.contains("pro:|investing club", regex=True)
     n_berbayar = int(berbayar.sum())
     out = out[~berbayar].copy()
 
-    # Samakan skema kolom dengan yang diharapkan preprocess_news.py,
+    # samakan skema kolom dengan yang diharapkan preprocess_news.py,
     # supaya pipeline hilir tidak perlu diubah sama sekali.
     out["article_id"] = out["url"]
     out["type"] = "article"
@@ -556,13 +397,6 @@ def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
     if "section" not in out:
         out["section"] = ""
 
-    # Gabungkan deskripsi dan isi artikel. Isi dipotong 2.000 karakter:
-    # paragraf pembuka berita memuat inti peristiwa, sisanya konteks dan
-    # kutipan yang justru menambah noise untuk tugas klasifikasi harian.
-    #
-    # CATATAN: baris ini MENIMPA deskripsi asli. Kalau nanti deskripsi murni
-    # dibutuhkan (mis. sebagai fallback untuk artikel live blog yang body-nya
-    # kosong), salin dulu ke kolom lain sebelum penimpaan ini.
     out["description"] = (
         out.get("description", "").fillna("")
         + " "
@@ -579,8 +413,6 @@ def run_stage3(limit=None, index_file=None, out_csv=None, ckpt_dir=None):
     print(f"  Tersimpan         : {out_path}")
     print("=" * 55)
     print("\n  Lanjutkan dengan: python preprocess_news.py")
-    
-
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

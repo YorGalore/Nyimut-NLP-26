@@ -1,21 +1,5 @@
-"""
-test_archive.py
-===============
-Skrip sekali pakai. Menjawab dua pertanyaan:
-
-  1. Apakah format nama-bulan-kapital (2024/August/15/) benar-benar
-     menampilkan daftar artikel?
-  2. Apakah arsip terisi untuk tanggal LAMA (2021) atau hanya yang baru?
-
-Pertanyaan kedua menentukan nasib proyek: kalau arsip hanya terisi beberapa
-bulan terakhir, kita tidak bisa dapat 5 tahun dari sini dan harus pindah sumber.
-
-Jalankan:  python test_archive.py
-"""
-
 import re
 import time
-
 from bs4 import BeautifulSoup
 
 try:
@@ -39,8 +23,7 @@ S.headers.update(HEADERS)
 
 RE_ART = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/[a-z0-9\-]+\.html")
 
-# Tanggal uji: sengaja hari kerja biasa (bukan libur, bukan akhir pekan),
-# tersebar dari awal sampai akhir rentang tugas.
+# hari kerja biasa (bukan libur, bukan akhir pekan)
 TESTS = [
     (2021, "September", 15),
     (2022, "June", 15),
@@ -63,13 +46,9 @@ def check(year, month, day):
 
     html = r.text
     soup = BeautifulSoup(html, "html.parser")
-
-    # Tanda paling jelas kalau arsip kosong
     empty = "No articles for this day" in html
 
-    # Hitung link artikel yang TANGGALNYA COCOK dengan halaman yang diminta.
-    # Ini penting: halaman CNBC selalu punya link artikel lain di sidebar,
-    # jadi menghitung semua link akan menipu kita.
+    # hitung link artikel yang TANGGALNYA COCOK dengan halaman yang diminta
     matched = set()
     for a in soup.find_all("a", href=True):
         m = RE_ART.search(a["href"])
