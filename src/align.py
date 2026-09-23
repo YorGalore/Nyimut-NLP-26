@@ -71,6 +71,9 @@ def main():
     print(f"news_tfidf_clean.csv diperbarui dengan kolom target_date")
 
     # agregasi ke level harian
+    # kolom lm_* datang dari sentiment_lexicon.py (jalan SEBELUM align.py).
+    # Kalau belum pernah dijalankan, error di sini -- itu sengaja, supaya
+    # ketahuan urutan scriptnya salah, bukan diam-diam skip kolom sentimen.
     daily = (
         news.groupby("target_date")
         .agg(
@@ -79,6 +82,9 @@ def main():
             max_relevance=("relevance_score", "max"),
             mean_tokens=("n_tokens", "mean"),
             pct_offhours=("is_offhours", "mean"),
+            mean_lm_polarity=("lm_polarity", "mean"),
+            lm_positive_sum=("lm_positive", "sum"),
+            lm_negative_sum=("lm_negative", "sum"),
             text_norm_concat=("text_norm", lambda s: " ".join(s.astype(str))),
         )
         .reset_index()
@@ -89,6 +95,11 @@ def main():
     merged = kurs.merge(daily, on="date", how="left")
     merged["n_news"] = merged["n_news"].fillna(0).astype(int)
     merged["text_norm_concat"] = merged["text_norm_concat"].fillna("")
+    merged["lm_positive_sum"] = merged["lm_positive_sum"].fillna(0)
+    merged["lm_negative_sum"] = merged["lm_negative_sum"].fillna(0)
+    # mean_lm_polarity SENGAJA dibiarkan NaN di hari tanpa berita (bukan 0) --
+    # 0 berarti "netral", NaN berarti "tidak ada sinyal sama sekali". train_tfidf.py
+    # sudah membuang hari n_news=0 sebelum modeling, jadi NaN ini tidak masalah.
 
     # lebar jendela berita yang mengalir ke hari ini
     merged["window_hours"] = merged["gap_days"].fillna(1) * 24

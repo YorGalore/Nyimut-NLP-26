@@ -2,3 +2,5 @@ pandas
 beautifulsoup4
 requests
 scikit-learn
+pysentiment2
+xgboost
