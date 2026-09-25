@@ -148,3 +148,7 @@ TZ_NEWS = "UTC"            # timestamp CNBC dalam UTC
 TZ_MARKET = "Asia/Jakarta" # WIB = UTC+7
 ALIGNMENT_CUTOFF_HOUR = 8
 FLAT_THRESHOLD = 0.0005
+
+# label target volatility: rolling std log_return atas N hari kerja terakhir
+# (termasuk hari itu sendiri), dibagi 3 kelas seimbang (tertile) rendah/sedang/tinggi
+VOLATILITY_WINDOW = 5

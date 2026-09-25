@@ -62,11 +62,15 @@ def parse_date(value):
         if mon:
             return pd.Timestamp(int(year), mon, int(day))
 
-    # format numerik: dayfirst=True karena BI memakai DD/MM/YYYY
-    for kwargs in ({"dayfirst": True}, {"dayfirst": False}):
-        ts = pd.to_datetime(s, errors="coerce", **kwargs)
-        if pd.notna(ts):
-            return ts
+    # format numerik: jisdor_raw.csv nyatanya M/D/YYYY (bukan DD/MM/YYYY!) --
+    # format DIPAKSA eksplisit di sini, jadi dayfirst diabaikan pandas.
+    # JANGAN hapus format= ini / balikin ke dayfirst=True tanpa format --
+    # itu bikin tanggal salah baca (mis. "9/11/2021" jadi 9 November,
+    # padahal maksudnya 11 September) dan sempat bikin 125 baris nyasar ke
+    # hari Sabtu/Minggu di kurs_clean.csv (JISDOR gak pernah terbit weekend).
+    ts = pd.to_datetime(s, format="%m/%d/%Y %I:%M:%S %p", errors="coerce")
+    if pd.notna(ts):
+        return ts
     return pd.NaT
 
 
@@ -112,6 +116,7 @@ def main():
 
     # variabel target 
     out["prev_kurs"] = out["kurs"].shift(1)
+    out["prev_date"] = out["date"].shift(1)
     out["gap_days"] = (out["date"] - out["prev_date"]).dt.days
 
     out["delta"] = out["kurs"] - out["prev_kurs"]
@@ -123,6 +128,27 @@ def main():
         ["up", "down"],
         default="flat",
     )
+
+    # --- dasar volatility (Tugas 2/3) -----------------------------------------
+    # realized_vol(t) = std log_return atas VOLATILITY_WINDOW hari TERMASUK t
+    # sendiri -- nilai per baris ini sendiri AMAN (cuma pakai histori ke
+    # belakang, tak ada info masa depan).
+    #
+    # TAPI kelas low/medium/high-nya SENGAJA TIDAK dihitung di sini. Kalau
+    # dibagi tertile (qcut) dari SELURUH 1.202 hari (termasuk yang nanti jadi
+    # test set), ambang batasnya "mengintip" sebaran volatility masa depan --
+    # bocor, walau realized_vol sendiri tidak. Ambang batas itu harus di-fit
+    # dari TRAIN SAJA, jadi baru dihitung di dataset_split.py (satu-satunya
+    # tempat yang tahu di mana batas train/valid/test) -- bukan di sini.
+    out["realized_vol"] = out["log_return"].rolling(C.VOLATILITY_WINDOW).std()
+
+    # --- fitur historis untuk baseline time-series murni (tanpa teks) --------
+    # Semua di-shift(1) atau lebih supaya prediksi hari t cuma pakai data
+    # SEBELUM hari t -- ini setara dengan aturan cutoff berita di align.py,
+    # cuma versi untuk jalur harga.
+    for lag in (1, 2, 3):
+        out[f"lag{lag}_log_return"] = out["log_return"].shift(lag)
+    out["lag1_realized_vol"] = out["realized_vol"].shift(1)
 
     out.to_csv(C.KURS_CLEAN_CSV, index=False)
 
