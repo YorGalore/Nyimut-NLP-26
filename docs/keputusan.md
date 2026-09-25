@@ -566,6 +566,38 @@ Dengan demikian, tahap pemodelan dapat dilakukan menggunakan dataset yang sudah 
 
 ---
 
+## 33. Pemeriksaan Pergeseran Distribusi Fitur Antar Periode
+
+### Keputusan
+
+Memasukkan pemeriksaan distribusi fitur antar periode sebagai bagian dari **Exploratory Data Analysis (EDA)**. Perbandingan train dan valid digunakan untuk mengidentifikasi pergeseran sebelum evaluasi akhir pada test.
+
+### Bukti dari EDA
+
+Berdasarkan ringkasan EDA, rata-rata jumlah artikel per hari berubah dari sekitar **3,9 pada train** menjadi **8,0 pada valid**. Perbedaan ini menunjukkan perubahan rata-rata volume berita antar periode, sehingga indikasi pergeseran sudah dapat diketahui tanpa melihat test.
+
+Perubahan cakupan scraping merupakan salah satu kemungkinan penyebabnya. Namun, penyebab tersebut belum dapat dipastikan hanya dari rata-rata jumlah artikel; perubahan intensitas pemberitaan dan komposisi periode juga perlu dipertimbangkan.
+
+### Cakupan Pemeriksaan
+
+- Jumlah artikel per tahun dan per hari untuk menggambarkan cakupan hasil scraping dari waktu ke waktu. Perbandingan antar tahun perlu memperhatikan apakah tahun tersebut tercakup penuh atau hanya sebagian.
+- Distribusi `n_news` antar periode, termasuk median, kuartil, dan proporsi hari tanpa berita, agar analisis tidak hanya bergantung pada rata-rata.
+- Sebaran fitur teks, misalnya `lm_negative_sum`, pada train dan valid untuk memeriksa apakah perubahan volume berita turut memengaruhi fitur agregat.
+
+Pemeriksaan ini termasuk **distribution shift pada fitur**. Istilah *covariate shift* secara lebih khusus mengasumsikan bahwa distribusi fitur berubah sementara hubungan bersyarat antara fitur dan target tetap; pemeriksaan sebaran fitur saja belum membuktikan asumsi tersebut.
+
+### Implikasi
+
+Fitur berbentuk jumlah, seperti `lm_negative_sum`, dapat meningkat karena lebih banyak artikel atau teks yang terkumpul. Karena itu, kenaikannya tidak langsung diartikan sebagai peningkatan intensitas sentimen negatif. Analisis perlu mempertimbangkan volume berita dan panjang teks, serta membandingkan fitur agregat dengan ukuran yang dinormalisasi bila sesuai.
+
+Normalisasi `news_density` pada keputusan 18 memperhitungkan panjang jendela waktu, tetapi tidak otomatis mengatasi perubahan cakupan scraping antar periode.
+
+### Batas Penggunaan Data
+
+Test disimpan untuk evaluasi akhir dan tidak digunakan untuk menentukan fitur, normalisasi, atau parameter model. Transformasi yang mempelajari parameter dari data, seperti scaler dan TF-IDF, di-fit hanya pada train, kemudian diterapkan pada valid dan test.
+
+---
+
 # Ringkasan Keputusan Utama
 
 | No. | Aspek | Keputusan |
@@ -595,3 +627,4 @@ Dengan demikian, tahap pemodelan dapat dilakukan menggunakan dataset yang sudah 
 | 23 | Kalender trading | Diturunkan dari JISDOR |
 | 24 | Dataset alignment | `aligned_daily.csv` |
 | 25 | Robustness | `target_date_lag1` |
+| 26 | EDA antar periode | Periksa pergeseran distribusi fitur pada train dan valid; test untuk evaluasi akhir |
