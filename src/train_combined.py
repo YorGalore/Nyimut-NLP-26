@@ -2,21 +2,21 @@
 train_combined.py
 ==================
 MODEL GABUNGAN -- satu XGBoost yang makan SEMUA fitur sekaligus: harga
-historis (lag log_return, lag realized_vol) + TF-IDF (dikompres) + Loughran-
+historis (PRICE_FEATURES di dataset_split.py) + TF-IDF (dikompres) + Loughran-
 McDonald sentiment. Ini produk akhirnya -- bukan perbandingan "pilih salah
 satu", tapi integrasi ketiganya jadi satu prediktor volatility_class.
 
-Model-model sebelumnya (harga-saja, harga+LM tanpa TF-IDF) tetap dilaporkan
-di sini sebagai TAHAPAN, supaya kelihatan kontribusi tiap fitur ditambahkan
-satu-satu -- bukan buat "milih pemenang", tapi buat cek apakah tiap
-penambahan fitur beneran nolong atau nggak.
+Perbandingan utama: (1) naive persistence, (2) XGBoost tanpa NLP (harga
+saja), (3) XGBoost + TF-IDF + LM. Selisih (3) vs (2) = kontribusi berita.
+Semua XGBoost di-tuning pakai grid yang sama (XGB_GRID di dataset_split.py)
+supaya adil. Harga + LM tanpa TF-IDF tetap dilaporkan sebagai ablasi.
 
 KENAPA TF-IDF DIKOMPRES (TruncatedSVD) SEBELUM DIGABUNG:
 --------------------------------------------------------------------------
 TF-IDF menghasilkan 5.000 kolom (satu per kata/frasa), sedangkan fitur
-harga+LM cuma 7 kolom. Kalau digabung mentah-mentah, split tree XGBoost
+harga+LM cuma belasan kolom. Kalau digabung mentah-mentah, split tree XGBoost
 nyaris selalu jatuh ke salah satu dari 5.000 kolom TF-IDF (probabilitas
-menang cuma dari jumlah kolom), dan 7 kolom harga+LM nyaris gak pernah
+menang cuma dari jumlah kolom), dan kolom harga+LM nyaris gak pernah
 kepakai walau sinyalnya kuat. TruncatedSVD meringkas 5.000 kolom TF-IDF
 jadi N_SVD_COMPONENTS "sumbu topik" utama (kombinasi linear kata-kata yang
 sering muncul bareng) -- masih representasi TF-IDF, cuma diringkas supaya
@@ -28,31 +28,14 @@ fit_transform() di train, transform() doang di valid/test.
 
 import joblib
 from sklearn.decomposition import TruncatedSVD
-from sklearn.dummy import DummyClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
-from xgboost import XGBClassifier
 import numpy as np
-import pandas as pd
+from scipy.stats import binomtest
 
 import config as C
-from dataset_split import build_dataset, log_split_summary
-
-PRICE_FEATURES = [
-    "lag1_log_return", "lag2_log_return", "lag3_log_return", "lag1_realized_vol",
-    "lag1_volatility_class_enc",
-]
-LM_FEATURES = ["mean_lm_polarity", "lm_positive_sum", "lm_negative_sum"]
-
-# grid kecil buat tuning -- dipilih berdasarkan akurasi VALID, dites ke test
-# cuma SEKALI pakai kombinasi terbaik (bukan pilih2 sambil intip test).
-XGB_GRID = [
-    {"n_estimators": n, "max_depth": d, "learning_rate": lr}
-    for n in (100, 200, 400)
-    for d in (2, 3, 4)
-    for lr in (0.03, 0.05, 0.1)
-]
+from dataset_split import LM_FEATURES, PRICE_FEATURES, build_dataset, log_split_summary, tune_xgb
 
 MIN_DF = 5
 MAX_DF = 0.8
@@ -68,38 +51,17 @@ MODEL_DIR = C.ROOT / "models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def fit_xgb(X_train, y_train_enc, X_valid, X_test, encoder):
-    clf = XGBClassifier(
-        n_estimators=200, max_depth=3, learning_rate=0.05,
-        eval_metric="mlogloss", random_state=42,
-    )
-    clf.fit(X_train, y_train_enc)
-    pred_valid = encoder.inverse_transform(clf.predict(X_valid))
-    pred_test = encoder.inverse_transform(clf.predict(X_test))
-    return clf, pred_valid, pred_test
-
-
-def tune_xgb(X_train, y_train_enc, X_valid, y_valid, X_test, encoder, log):
+def mcnemar(y_true, pred_a, pred_b):
     """
-    Coba semua kombinasi di XGB_GRID, PILIH berdasarkan akurasi VALID --
-    test SAMA SEKALI tidak dilihat selama memilih. Kombinasi terbaik baru
-    dites ke test SEKALI di akhir. Ini gunanya split 70/15/15 dibanding
-    80/20: ada ruang buat coba-coba tanpa mengintip test.
+    Uji McNemar exact: apakah model A dan B beda akurasi secara signifikan di
+    hari-hari yang SAMA. Cuma hari yang hasilnya BEDA (A benar & B salah, atau
+    sebaliknya) yang dihitung; di bawah H0 keduanya sama mungkin (binomial p=0,5).
     """
-    best_acc, best_params, best_clf = -1, None, None
-    for params in XGB_GRID:
-        clf = XGBClassifier(**params, eval_metric="mlogloss", random_state=42)
-        clf.fit(X_train, y_train_enc)
-        pred_valid = encoder.inverse_transform(clf.predict(X_valid))
-        acc = accuracy_score(y_valid, pred_valid)
-        if acc > best_acc:
-            best_acc, best_params, best_clf = acc, params, clf
-
-    log(f"Hyperparameter terbaik (dipilih dari {len(XGB_GRID)} kombinasi via akurasi VALID): {best_params}")
-    log(f"Akurasi valid dengan kombinasi ini: {best_acc:.3f}")
-    pred_valid = encoder.inverse_transform(best_clf.predict(X_valid))
-    pred_test = encoder.inverse_transform(best_clf.predict(X_test))
-    return best_clf, pred_valid, pred_test
+    y_true, pred_a, pred_b = map(np.asarray, (y_true, pred_a, pred_b))
+    a_only = int(((pred_a == y_true) & (pred_b != y_true)).sum())
+    b_only = int(((pred_a != y_true) & (pred_b == y_true)).sum())
+    p = binomtest(a_only, a_only + b_only).pvalue if a_only + b_only else 1.0
+    return a_only, b_only, p
 
 
 def report_block(log, y_valid, pred_valid, y_test, pred_test, labels):
@@ -128,9 +90,6 @@ def main():
     encoder = LabelEncoder().fit(y_train)
     y_train_enc = encoder.transform(y_train)
 
-    dummy = DummyClassifier(strategy="most_frequent")
-    dummy.fit(train[PRICE_FEATURES], y_train)
-    dummy_acc = accuracy_score(y_test, dummy.predict(test[PRICE_FEATURES]))
     naive_acc = accuracy_score(y_test, test["lag1_volatility_class"])
 
     # --- fitur TF-IDF, dikompres jadi N_SVD_COMPONENTS kolom, fit di train saja
@@ -155,20 +114,30 @@ def main():
         return np.hstack([price_lm, Z]), PRICE_FEATURES + LM_FEATURES + cols
 
     # =========================================================================
-    # TAHAPAN A: harga-saja (Tahap 3, diulang di sini sebagai acuan)
+    # TAHAPAN A: XGBoost tanpa NLP (harga saja; sama dengan train_baseline_ts.py)
     # =========================================================================
-    clf_price, pred_valid_price, pred_test_price = fit_xgb(
-        train[PRICE_FEATURES], y_train_enc, valid[PRICE_FEATURES], test[PRICE_FEATURES], encoder,
+    log("=" * 60)
+    log("XGBOOST TANPA NLP -- harga historis saja")
+    log("=" * 60)
+    clf_price, pred_valid_price, pred_test_price = tune_xgb(
+        train[PRICE_FEATURES], y_train_enc, valid[PRICE_FEATURES], y_valid,
+        test[PRICE_FEATURES], encoder, log,
     )
+    log()
     acc_price_test = accuracy_score(y_test, pred_test_price)
 
     # =========================================================================
-    # TAHAPAN B: harga + LM (tanpa TF-IDF)
+    # TAHAPAN B (ablasi): harga + LM (tanpa TF-IDF)
     # =========================================================================
     feat_b = PRICE_FEATURES + LM_FEATURES
-    clf_b, pred_valid_b, pred_test_b = fit_xgb(
-        train[feat_b].fillna(0), y_train_enc, valid[feat_b].fillna(0), test[feat_b].fillna(0), encoder,
+    log("=" * 60)
+    log("ABLASI -- harga + LM (tanpa TF-IDF)")
+    log("=" * 60)
+    clf_b, pred_valid_b, pred_test_b = tune_xgb(
+        train[feat_b].fillna(0), y_train_enc, valid[feat_b].fillna(0), y_valid,
+        test[feat_b].fillna(0), encoder, log,
     )
+    log()
     acc_b_test = accuracy_score(y_test, pred_test_b)
 
     # =========================================================================
@@ -209,13 +178,23 @@ def main():
 
     # =========================================================================
     log("=" * 60)
-    log("PERBANDINGAN AKURASI TEST (target: volatility_class) -- efek menambah fitur satu-satu")
+    log("PERBANDINGAN AKURASI TEST (target: volatility_class)")
     log("=" * 60)
-    log(f"  Dummy (kelas mayoritas)                        : {dummy_acc:.3f}")
-    log(f"  Naive persistence                              : {naive_acc:.3f}")
-    log(f"  1. Harga-saja                                  : {acc_price_test:.3f}")
-    log(f"  2. Harga + LM                                  : {acc_b_test:.3f}   (selisih vs (1): {acc_b_test-acc_price_test:+.3f})")
-    log(f"  3. Harga + LM + TF-IDF(SVD) -- MODEL GABUNGAN  : {acc_combined_test:.3f}   (selisih vs (2): {acc_combined_test-acc_b_test:+.3f})")
+    log(f"  1. Naive persistence (baseline)                : {naive_acc:.3f}")
+    log(f"  2. XGBoost tanpa NLP (harga saja)              : {acc_price_test:.3f}   (selisih vs (1): {acc_price_test-naive_acc:+.3f})")
+    log(f"  3. XGBoost + TF-IDF + LM -- MODEL UTAMA        : {acc_combined_test:.3f}   (selisih vs (2): {acc_combined_test-acc_price_test:+.3f})")
+    log()
+    log(f"  Ablasi: XGBoost harga + LM (tanpa TF-IDF)      : {acc_b_test:.3f}   (selisih vs (2): {acc_b_test-acc_price_test:+.3f})")
+    log()
+    log("Uji signifikansi McNemar (TEST, alpha=0,05) -- 'A saja benar / B saja benar':")
+    naive_pred = test["lag1_volatility_class"].astype(str)
+    for name, pa, pb in (
+        ("(2) vs (1) naive      ", pred_test_price, naive_pred),
+        ("(3) vs (2) tanpa NLP  ", pred_test_combined, pred_test_price),
+        ("(3) vs (1) naive      ", pred_test_combined, naive_pred),
+    ):
+        a_only, b_only, p = mcnemar(y_test, pa, pb)
+        log(f"  {name}: {a_only:>3} / {b_only:<3} hari  p = {p:.3f}  {'SIGNIFIKAN' if p < 0.05 else 'tidak signifikan'}")
 
     REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
     log(f"\nLaporan tersimpan: {REPORT_PATH}")

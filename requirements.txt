@@ -4,3 +4,4 @@ requests
 scikit-learn
 pysentiment2
 xgboost
+scipy

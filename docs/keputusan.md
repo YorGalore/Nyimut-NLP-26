@@ -566,6 +566,242 @@ Dengan demikian, tahap pemodelan dapat dilakukan menggunakan dataset yang sudah 
 
 ---
 
+## 33. Target Prediksi: Kelas Volatilitas
+
+### Keputusan
+Target model adalah `volatility_class` (`low` / `medium` / `high`), yaitu kelas dari `realized_vol`:
+
+`realized_vol(t) = std(log_return[t-4], ..., log_return[t])`
+
+atau simpangan baku perubahan kurs (log return) selama 5 hari kerja BI terakhir, termasuk hari t (`VOLATILITY_WINDOW = 5`).
+
+### Alasan
+- Pertanyaan penelitian berfokus pada **fluktuasi** nilai tukar, bukan arah naik/turun. Volatilitas lebih relevan untuk menangkap dampak ketidakpastian geopolitik.
+- Jendela 5 hari kerja (±1 minggu) meredam derau harian satu hari.
+
+### Konsekuensi yang Perlu Dipahami
+Jendela hari t dan hari t-1 berbagi 4 dari 5 return yang sama, sehingga kelas volatilitas sangat persisten dari hari ke hari. Akibatnya baseline naive persistence (Keputusan 36) sudah kuat, dan fitur harga perlu dirancang mengikuti struktur ini (Keputusan 37).
+
+### Alternatif yang Dipertimbangkan
+- Arah perubahan kurs (`direction`: up/flat/down dengan `FLAT_THRESHOLD`).
+- Volatilitas ke depan yang tidak tumpang tindih dengan data kemarin (mis. |r[t]| atau std r[t..t+4]).
+
+### Alasan Tidak Dipilih
+Kolom `direction` tetap dihitung di `preprocess_kurs.py`, tetapi tidak dipakai sebagai target karena pertanyaan penelitian adalah fluktuasi. Target volatilitas ke depan tidak dipilih untuk menjaga definisi target yang sudah ditetapkan; keterbatasan persistensinya dicatat sebagai bagian dari interpretasi hasil.
+
+---
+
+## 34. Ambang Kelas Volatilitas (Tertile dari Data Train)
+
+### Keputusan
+`realized_vol` dibagi menjadi 3 kelas menggunakan **tertile** (`pd.qcut(..., 3)`) yang dihitung **hanya dari 70% hari kerja tertua**. Ambang yang diperoleh:
+
+- `low`: realized_vol < 0,207%
+- `medium`: 0,207% – 0,312%
+- `high`: > 0,312%
+
+Ambang yang sama kemudian diterapkan (`pd.cut`) ke seluruh deret, termasuk valid dan test.
+
+### Alasan
+- **Kelas seimbang:** tertile membagi data train menjadi tiga kelompok berukuran sama, sehingga model tidak bisa mendapat akurasi tinggi hanya dengan menebak satu kelas.
+- **Relatif terhadap perilaku rupiah:** "high" berarti lebih bergejolak dari kebiasaan USD/IDR selama periode train, bukan ambang absolut yang dipilih manual.
+- **Mencegah kebocoran:** jika ambang dihitung dari seluruh data, ambang tersebut ikut "mengetahui" sebaran volatilitas periode test.
+
+### Konsekuensi
+Distribusi kelas di valid dan test tidak lagi seimbang (test: low 51, medium 65, high 51). Hal ini wajar karena kondisi pasar berubah antar periode.
+
+---
+
+## 35. Split Kronologis 70/15/15 pada Hari Berberita
+
+### Keputusan
+- Pelabelan kelas dan fitur lag dihitung pada **kalender hari kerja lengkap**, baru kemudian difilter ke hari yang memiliki berita (`n_news > 0`).
+- Data dibagi secara kronologis: 70% train, 15% valid, 15% test.
+- Ketiga skrip training (`train_baseline_ts.py`, `train_tfidf.py`, `train_combined.py`) memakai **himpunan hari yang identik**:
+  - Train: 772 hari (16-09-2021 s.d. 25-03-2025)
+  - Valid: 165 hari (26-03-2025 s.d. 09-12-2025)
+  - Test: 167 hari (11-12-2025 s.d. 01-09-2026)
+
+### Alasan
+- Split acak akan membuat model belajar dari masa depan untuk memprediksi masa lalu.
+- Valid dipakai untuk memilih hyperparameter; test hanya dipakai **satu kali** di akhir.
+- Fitur lag dihitung sebelum filter agar "hari sebelumnya" selalu berarti hari kerja BI sebelumnya, bukan hari berberita sebelumnya.
+- Himpunan hari yang identik diperlukan agar akurasi antar model dapat dibandingkan secara langsung.
+
+---
+
+## 36. Baseline Naive Persistence
+
+### Keputusan
+Baseline utama adalah **naive persistence**: kelas volatilitas hari t diprediksi sama dengan kelas hari t-1 (`lag1_volatility_class`). Baseline ini tidak dilatih dan tidak memiliki hyperparameter.
+
+### Alasan
+Karena target sangat persisten (Keputusan 33), naive persistence adalah tolok ukur minimum yang bermakna. Model yang tidak dapat melampaui naive tidak memberikan nilai tambah.
+
+### Alternatif yang Tidak Dipilih
+Dummy classifier (selalu menebak kelas mayoritas train). Baseline ini dihapus karena terlalu lemah (akurasi test 0,305, setara menebak acak) dan tidak relevan untuk pertanyaan penelitian.
+
+---
+
+## 37. Fitur Harga (`PRICE_FEATURES`)
+
+### Keputusan
+Fitur harga didefinisikan satu kali di `dataset_split.py` dan dipakai **sama persis** oleh XGBoost tanpa NLP dan XGBoost + TF-IDF + LM:
+
+| Fitur | Isi |
+|---|---|
+| `lag1_log_return` s.d. `lag4_log_return` | Return 1–4 hari kerja sebelumnya |
+| `known4_mean`, `known4_std` | Rata-rata dan simpangan baku dari r[t-4..t-1] |
+| `vol_if_r0` | `realized_vol(t)` jika r[t] = 0 |
+| `vol_if_rtyp_pos`, `vol_if_rtyp_neg` | `realized_vol(t)` jika r[t] = ± median \|r\| historis (expanding, di-shift 1 hari) |
+| `lag1_volatility_class_enc` | Kelas kemarin (low = 0, medium = 1, high = 2) |
+
+### Alasan
+Empat dari lima return dalam jendela target sudah diketahui sebelum hari t (Keputusan 33). Fitur di atas memberikan informasi tersebut secara langsung, sehingga model cukup menilai apakah pergerakan hari t (dan informasi berita) cukup besar untuk memindahkan kelas.
+
+Semua fitur hanya menggunakan data **sebelum hari t**. Hal ini telah diuji: mengubah return hari t dan sesudahnya tidak mengubah nilai fitur hari t.
+
+### Alternatif yang Dipertimbangkan
+Fitur awal: `lag1–3_log_return`, `lag1_realized_vol`, `lag1_volatility_class_enc`.
+
+### Alasan Tidak Dipilih
+- `lag4_log_return` tidak tersedia, padahal r[t-4] masih termasuk dalam jendela target.
+- `lag1_realized_vol` memuat r[t-5], yaitu return yang sudah keluar dari jendela target.
+- Dengan fitur awal, XGBoost tanpa NLP hanya mencapai akurasi test 0,689, lebih rendah dari naive (0,713).
+
+---
+
+## 38. Tipe Numerik untuk Fitur Kelas Kemarin
+
+### Keputusan
+`lag1_volatility_class_enc` disimpan sebagai **float** (`.astype(float)`).
+
+### Alasan
+Tanpa konversi, kolom tersebut mewarisi tipe `category` dari `pd.cut`. XGBoost membacanya sebagai kategori tanpa urutan jika diberi DataFrame (XGBoost tanpa NLP dan ablasi), tetapi sebagai angka berurutan jika diberi array numpy (model gabungan). Akibatnya fitur yang sama diperlakukan berbeda antar model yang dibandingkan. Pada versi XGBoost lama, kondisi ini juga dapat menimbulkan error.
+
+---
+
+## 39. Normalisasi Fitur Sentimen LM (Rata-rata per Artikel)
+
+### Keputusan
+Fitur sentimen Loughran-McDonald yang dipakai model:
+
+- `mean_lm_polarity`
+- `lm_positive_mean = lm_positive_sum / n_news`
+- `lm_negative_mean = lm_negative_sum / n_news`
+
+Fitur ini didefinisikan sekali sebagai `LM_FEATURES` di `dataset_split.py`.
+
+### Alasan
+- **Konsisten dengan Keputusan 18.** Jumlah berita mentah tidak dapat dibandingkan langsung antar hari. Fitur berbasis jumlah (`lm_*_sum`) memiliki masalah yang sama karena nilainya ikut membesar seiring jumlah artikel.
+- **Fitur sentimen seharusnya mengukur nada, bukan volume.** Volume berita sudah terwakili terpisah melalui `n_news`.
+- **Temuan EDA:** jumlah artikel per hari tidak stabil antar periode (rata-rata 3,9 pada train dan 8,0 pada valid), diduga akibat perbedaan cakupan scraping. Sementara itu, jumlah kata negatif per artikel relatif stabil (±21–27). Pergeseran ini sudah terlihat pada train dan valid, tanpa perlu melihat data test.
+
+### Alternatif yang Dipertimbangkan
+`lm_positive_sum` dan `lm_negative_sum` (jumlah per hari).
+
+### Catatan Transparansi
+Kedua versi telah dibandingkan. Akurasi test model utama identik (0,766) untuk kedua versi, sehingga keputusan ini tidak mengubah kesimpulan dan tidak didasarkan pada hasil test.
+
+---
+
+## 40. Representasi TF-IDF pada Model Gabungan
+
+### Keputusan
+- TF-IDF: `min_df=5`, `max_df=0.8`, unigram + bigram, maksimum 5.000 fitur, di-fit dari data train saja.
+- Untuk model gabungan, TF-IDF dikompres menjadi 20 komponen dengan `TruncatedSVD` yang juga di-fit dari data train saja.
+
+### Alasan
+Tanpa kompresi, 5.000 kolom TF-IDF akan mendominasi pemilihan split pada pohon XGBoost, sehingga fitur harga dan LM yang jumlahnya jauh lebih sedikit hampir tidak pernah terpakai. Model TF-IDF saja (`train_tfidf.py`) tetap memakai 5.000 kolom penuh karena tidak digabung dengan fitur lain.
+
+---
+
+## 41. XGBoost dengan Tuning Hyperparameter yang Seragam
+
+### Keputusan
+Semua model XGBoost di-tuning menggunakan fungsi dan grid yang sama (`tune_xgb` dan `XGB_GRID` di `dataset_split.py`):
+
+- `n_estimators`: 100, 200, 400
+- `max_depth`: 2, 3, 4
+- `learning_rate`: 0,03; 0,05; 0,1
+
+Total 27 kombinasi. Setiap kombinasi dilatih pada train dan dinilai dengan akurasi valid. Kombinasi terbaik dievaluasi pada test **satu kali**. Parameter lain memakai default XGBoost dengan `random_state=42`.
+
+### Alasan
+- Sebelumnya hanya model gabungan yang di-tuning, sedangkan model pembanding memakai parameter tetap. Perbandingan seperti itu tidak adil karena model NLP mendapat kesempatan optimasi lebih banyak.
+- Dengan grid yang sama, selisih akurasi antar model mencerminkan kontribusi fitur, bukan perbedaan upaya tuning.
+
+### Alternatif yang Tidak Dipilih
+Logistic Regression sebagai algoritma pembanding pada model teks saja. Algoritma ini dihapus karena perbandingan antar algoritma bukan bagian dari pertanyaan penelitian.
+
+---
+
+## 42. Model yang Dibandingkan
+
+### Keputusan
+**Perbandingan utama** (`train_combined.py`):
+
+1. Naive persistence (baseline)
+2. XGBoost tanpa NLP (`PRICE_FEATURES`)
+3. XGBoost + TF-IDF + LM (model utama)
+
+**Pendukung:**
+
+- XGBoost teks saja: TF-IDF saja dan LM saja, tanpa fitur harga (`train_tfidf.py`).
+- Ablasi: XGBoost harga + LM tanpa TF-IDF (`train_combined.py`).
+
+### Alasan
+- Selisih (3) terhadap (2) mengukur kontribusi berita geopolitik di atas histori harga, yang merupakan inti pertanyaan penelitian.
+- Model teks saja menguji apakah berita dapat memprediksi volatilitas **tanpa** histori harga.
+- Ablasi memisahkan kontribusi LM dari TF-IDF.
+
+---
+
+## 43. Metrik Evaluasi dan Uji Signifikansi
+
+### Keputusan
+- Metrik utama: **akurasi** pada test set. Metrik pendukung: macro F1, classification report, dan confusion matrix.
+- Signifikansi selisih antar model diuji dengan **uji McNemar exact** (α = 0,05) pada test set. Uji ini sudah dijalankan otomatis di `train_combined.py`.
+
+### Alasan
+- Kelas pada data train seimbang, sehingga akurasi mudah diinterpretasikan. Macro F1 ditambahkan karena distribusi kelas test tidak seimbang.
+- Uji McNemar sesuai untuk membandingkan dua classifier pada data uji yang sama: yang dihitung hanya hari-hari ketika kedua model memberikan hasil berbeda.
+
+---
+
+## 44. Hasil Evaluasi Akhir dan Keterbatasan
+
+### Hasil (test set, 167 hari)
+
+| Model | Akurasi valid | Akurasi test | Macro F1 test |
+|---|---|---|---|
+| Naive persistence | 0,727 | 0,713 | 0,72 |
+| XGBoost teks saja (TF-IDF) | 0,388 | 0,287 | 0,20 |
+| XGBoost teks saja (LM) | 0,370 | 0,305 | 0,31 |
+| XGBoost tanpa NLP | 0,806 | 0,731 | 0,74 |
+| Ablasi: harga + LM | 0,818 | 0,737 | – |
+| **XGBoost + TF-IDF + LM** | **0,812** | **0,766** | **0,77** |
+
+Uji McNemar (hari "A saja benar" / "B saja benar"):
+
+- XGBoost tanpa NLP vs naive: 20 / 17, p = 0,743
+- XGBoost + TF-IDF + LM vs XGBoost tanpa NLP: 9 / 3, p = 0,146
+- XGBoost + TF-IDF + LM vs naive: 23 / 14, p = 0,188
+
+### Interpretasi
+- Histori harga merupakan sumber informasi utama. Total feature importance model utama: harga 0,69, TF-IDF 0,26, LM 0,06.
+- Berita geopolitik menambah akurasi sebesar +3,6 poin di atas model harga saja, terutama pada kelas `medium`. Namun peningkatan ini **tidak signifikan secara statistik** pada α = 0,05.
+- Berita **tidak mampu memprediksi sendirian**. Model teks saja berada pada tingkat tebakan acak, dan model TF-IDF saja cenderung menghafal kosakata periode tertentu (misalnya "invasion", "annexation crimea") alih-alih pola yang dapat digeneralisasi.
+- TF-IDF (topik berita) lebih informatif dibanding nada sentimen LM.
+
+### Keterbatasan
+- Test set kecil (167 hari): satu hari setara 0,6 poin akurasi.
+- Evaluasi hanya pada satu periode test.
+- Jumlah artikel per hari meningkat pada 2025–2026, kemungkinan akibat cakupan scraping.
+- Fitur harga (Keputusan 37) dirancang pada tahap eksplorasi ketika hasil test versi awal sudah terlihat. Rancangannya diturunkan dari definisi target, bukan dari coba-coba, tetapi hal ini tetap dicatat sebagai keterbatasan.
+
+---
+
 # Ringkasan Keputusan Utama
 
 | No. | Aspek | Keputusan |
@@ -595,3 +831,14 @@ Dengan demikian, tahap pemodelan dapat dilakukan menggunakan dataset yang sudah 
 | 23 | Kalender trading | Diturunkan dari JISDOR |
 | 24 | Dataset alignment | `aligned_daily.csv` |
 | 25 | Robustness | `target_date_lag1` |
+| 26 | Target model | `volatility_class` dari realized_vol 5 hari kerja |
+| 27 | Ambang kelas | Tertile dari data train (0,207% / 0,312%) |
+| 28 | Split | Kronologis 70/15/15, hari identik di semua skrip |
+| 29 | Baseline | Naive persistence (dummy dihapus) |
+| 30 | Fitur harga | `PRICE_FEATURES` (4 return terakhir + skenario `vol_if_*`) |
+| 31 | Tipe fitur kelas kemarin | Numerik (float) |
+| 32 | Fitur sentimen | LM rata-rata per artikel |
+| 33 | TF-IDF pada model gabungan | Dikompres `TruncatedSVD` 20 komponen |
+| 34 | Algoritma & tuning | XGBoost, grid 27 kombinasi yang sama via akurasi valid |
+| 35 | Perbandingan utama | Naive vs XGBoost tanpa NLP vs XGBoost + TF-IDF + LM |
+| 36 | Evaluasi | Akurasi, macro F1, uji McNemar |

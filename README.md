@@ -141,7 +141,7 @@ playwright install chromium
 
 Dokumentasi proyek tersedia pada folder `docs/`. Beberapa dokumentasi utama:
 
-* [`Keputusan.md`](docs/Keputusan.md) — dokumentasi keputusan metodologis dan teknis proyek.
+* [`Keputusan.md`](docs/keputusan.md) — dokumentasi keputusan metodologis dan teknis proyek.
 * Laporan proyek — penjelasan lengkap mengenai metodologi, preprocessing, akuisisi data, dan temporal alignment.
 
 ---

@@ -98,7 +98,7 @@ def main():
     merged["lm_positive_sum"] = merged["lm_positive_sum"].fillna(0)
     merged["lm_negative_sum"] = merged["lm_negative_sum"].fillna(0)
     # mean_lm_polarity SENGAJA dibiarkan NaN di hari tanpa berita (bukan 0) --
-    # 0 berarti "netral", NaN berarti "tidak ada sinyal sama sekali". train_tfidf.py
+    # 0 berarti "netral", NaN berarti "tidak ada sinyal sama sekali". dataset_split.py
     # sudah membuang hari n_news=0 sebelum modeling, jadi NaN ini tidak masalah.
 
     # lebar jendela berita yang mengalir ke hari ini
